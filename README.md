@@ -88,16 +88,7 @@ aicreators_video_agent/
 
 #### macOS:
 ```bash
-<<<<<<< HEAD
-openai
-elevenlabs
-python-dotenv
-PyYAML
-requests
-google-cloud-storage
-=======
 brew install ffmpeg
->>>>>>> 51cbd03 (Update README with detailed setup instructions)
 ```
 
 #### Linux:
