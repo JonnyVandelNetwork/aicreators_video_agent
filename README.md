@@ -57,6 +57,7 @@ elevenlabs
 python-dotenv
 PyYAML
 requests
+google-cloud-storage
 ```
 
 ---
