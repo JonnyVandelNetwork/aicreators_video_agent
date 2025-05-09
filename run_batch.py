@@ -26,13 +26,6 @@ except ImportError:
 PRODUCT_CLIPS_MAP = {}  # <-- Make sure this line is ACTIVE (not commented out)
 # print("INFO: Product overlay feature temporarily DISABLED for this batch run.")
 
-# === Your original map (now ACTIVE) ===
-#PRODUCT_CLIPS_MAP = { # REMOVED '#'
-#    "Shilajit Gummies": '/Users/jonnybrower/ai_video_creator/Product Clips/#Shilajit_Transparent_AE_8bit_3.mov', # REMOVED '#'
-#    "Black Seed Oil": "/Users/jonnybrower/ai_video_creator/product_clips/#black_seed_oil_green.mp4", # REMOVED '#' (Only if you still need this)
-#    # Add entries for ALL products you might want to overlay
-#} # REMOVED '#'
-#print(f"Loaded Product Clip Mappings for: {list(PRODUCT_CLIPS_MAP.keys())}") # REMOVED '#' (Optional: uncomment to see confirmation)
 
 # --- Main Batch Function (Modified to handle new config fields) ---
 def run_batch(config_path: str):
@@ -139,6 +132,14 @@ def run_batch(config_path: str):
         enhance_for_elevenlabs = job_config.get('enhance_for_elevenlabs', False) # Default false
         brand_name = job_config['brand_name']
 
+        # Convert relative paths to absolute paths
+        if avatar_video_path.startswith('./') or avatar_video_path.startswith('.\\'):
+            avatar_video_path = os.path.abspath(avatar_video_path)
+            print(f"Converted relative avatar path to absolute: {avatar_video_path}")
+            
+        if example_script_file.startswith('./') or example_script_file.startswith('.\\'):
+            example_script_file = os.path.abspath(example_script_file)
+            print(f"Converted relative script path to absolute: {example_script_file}")
 
         # --- Read Example Script Content ---
         # ... (Script reading logic remains the same) ...
