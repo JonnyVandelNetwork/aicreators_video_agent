@@ -21,7 +21,5 @@ output/
 # Temporary video processing folders (auto-created during runs)
 temp_processing/
 
-# Log files or intermediate metadata (optional)
-*.logaicreators-video-agent-testing-ea442d0445a1.json
 # Google Cloud credentials (keep this private)
 aicreators-video-agent-testing-ea442d0445a1.json
