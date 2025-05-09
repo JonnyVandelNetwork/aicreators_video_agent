@@ -1,0 +1,15 @@
+jobs:
+  - job_name: Example_Video_01
+    enabled: true
+    product: Shilajit
+    persona: Black Male, Age 40
+    setting: Podcast Studio
+    emotion: Fear Mongering
+    hook: Use Fear Mongering and follow VERY closely with the example script.
+    elevenlabs_voice_id: YBDSbcepp5SBFpIspw7Z
+    avatar_video_path: /Users/jonnybrower/aicreators_video_agent/Avatars/Avatar Example.mp4
+    example_script_file: /Users/jonnybrower/aicreators_video_agent/examples/Enhanced Script Example.txt
+    remove_silence: true
+    language: English
+    enhance_for_elevenlabs: True
+    brand_name: Holistic Shilajit

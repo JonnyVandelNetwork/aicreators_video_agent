@@ -1,0 +1,27 @@
+# Python cache and bytecode files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local virtual environment folders (user-generated)
+venv/
+.venv/
+
+# Environment variable files (user must create from .env.example)
+.env
+
+# Editor and system-specific files
+.vscode/
+.DS_Store
+
+# Output and generated video files
+output/
+
+# Temporary video processing folders (auto-created during runs)
+temp_processing/
+
+# Log files or intermediate metadata (optional)
+*.logaicreators-video-agent-testing-ea442d0445a1.json
+# Google Cloud credentials (keep this private)
+aicreators-video-agent-testing-ea442d0445a1.json
