@@ -17,7 +17,9 @@ from elevenlabs import save
 from google.cloud import storage
 import traceback # For detailed error logging
 import math # For ceiling function later
-
+from typing import Callable, Optional, Tuple
+import os, re, time, uuid, traceback
+from datetime import datetime
 
 # --- Whisper and FFmpeg specific imports ---
 try:
@@ -760,7 +762,9 @@ def create_video_job(
     # --- API keys / Config ---
     openai_api_key: str, elevenlabs_api_key: str, dreamface_api_key: str, gcs_bucket_name: str,
     # --- Job Info ---
-    job_name: str = "Unnamed Job"
+    job_name: str = "Unnamed Job",
+    # --- Progress callback ---
+    progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> tuple[bool, str | None]:
     """
     Performs the complete video generation process for a single job,
@@ -771,6 +775,17 @@ def create_video_job(
     # uncomment the next line. Otherwise, randomness will be different each run.
     # random.seed(job_name)
     # === End Optional Seed ===
+
+    steps = [
+        "Generating script",
+        "Synthesizing audio",
+        "Uploading to GCS",
+        "Running lip-sync",
+        "Merging video/audio",
+        "Uploading video result"
+    ]
+    total_steps = len(steps)
+    step = 0
 
     print(f"\n--- Starting Job: {job_name} [{datetime.now().isoformat()}] ---")
     job_start_time = time.time()
@@ -893,7 +908,7 @@ def create_video_job(
     silence_removed_path = f"{output_file_base}_edited.mp4"
     # final_raw_video_path is defined using output_product_folder earlier, which is okay
     final_output_with_overlay_path = f"{output_file_base}_final_overlay.mp4"
-    
+
 
     # KEEP these definitions using output_product_folder as they define specific target paths for earlier steps
     edited_filename = f"edited_{sanitized_product_name}_{sanitized_avatar_name}_{run_uuid}.mp4"
@@ -909,6 +924,9 @@ def create_video_job(
     step_start_time = time.time()
     try:
         # Step 2: Generate Script
+        if progress_callback:
+            progress_callback(step, total_steps, steps[step])
+            step += 1
         print(f"\n--- [{job_name}] Step 2: Generate Script ---")
         generated_script = generate_script(
             openai_client, product, persona, setting, emotion, hook, example_script_content, language=language, enhance_for_elevenlabs=enhance_for_elevenlabs, brand_name=brand_name
@@ -918,6 +936,9 @@ def create_video_job(
         print(f"[{job_name}] Step 2 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
 
         # Step 3: Generate Audio
+        if progress_callback:
+            progress_callback(step, total_steps, steps[step])
+            step += 1
         print(f"\n--- [{job_name}] Step 3: Generate Audio ---")
         audio_success = generate_audio(
             elevenlabs_client, generated_script, elevenlabs_voice_id, temp_audio_filename
@@ -926,6 +947,9 @@ def create_video_job(
         print(f"[{job_name}] Step 3 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
 
         # Step 4: Upload & Get URLs
+        if progress_callback:
+            progress_callback(step, total_steps, steps[step])
+            step += 1
         print(f"\n--- [{job_name}] Step 4: Upload & Get URLs ---")
         audio_upload_success = upload_to_gcs(gcs_bucket_name, temp_audio_filename, gcs_audio_blob_name)
         # Only upload avatar video if audio succeeded (save API call if not needed)
@@ -942,6 +966,9 @@ def create_video_job(
         except OSError as e: print(f"Warning [{job_name}]: Failed to delete {temp_audio_filename}: {e}")
 
         # Step 5: DreamFace Lip-Sync
+        if progress_callback:
+            progress_callback(step, total_steps, steps[step])
+            step += 1
         print(f"\n--- [{job_name}] Step 5: DreamFace Lip-Sync ---")
         task_id = submit_dreamface_job(dreamface_api_key, video_signed_url, audio_signed_url)
         if not task_id: print(f"ERROR [{job_name}]: DreamFace job submission failed."); return False, None # Cleanup in finally
@@ -956,6 +983,9 @@ def create_video_job(
         print(f"[{job_name}] Step 5 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
 
         # Step 6: Finalize Base Video (Silence Removal / Rename)
+        if progress_callback:
+            progress_callback(step, total_steps, steps[step])
+            step += 1
         print(f"\n--- [{job_name}] Step 6: Finalize Base Video (Silence Removal / Rename) ---")
         current_video_path = raw_downloaded_video_path # Start with the downloaded path
         intended_final_path = None # Path *before* overlay
@@ -1015,6 +1045,7 @@ def create_video_job(
 
         print(f"[{job_name}] Base video path set to: {intended_final_path}")
         print(f"[{job_name}] Step 6 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
+        final_output_path = intended_final_path
 
         # --- Final Check (uses final_output_path which might now be the _overlay path) ---
         print(f"[{job_name}] Performing final check on path: {final_output_path}")
@@ -1023,6 +1054,9 @@ def create_video_job(
             return False, None # Fail the job
 
         # Step 9: Upload to Drive (Placeholder - uses the potentially updated final_output_path)
+        if progress_callback:
+            progress_callback(step, total_steps, steps[step])
+            step += 1
         print(f"\n--- [{job_name}] Step 9: Upload to Google Drive ---")
         print(f"[{job_name}] (Placeholder) Upload Final Video ({final_output_path}) to Drive.")
 
