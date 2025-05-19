@@ -284,55 +284,73 @@ def save_settings():
 # ─── Route: Run Campaign ───────────────────────────────────────────
 @app.route("/run-job", methods=["POST"])
 def run_job():
-    # 1) Read the campaign's ID from the form
+    # 1) Read the campaign's ID
     campaign_id = request.form.get("campaign_id") or request.form.get("id")
     if not campaign_id:
         return jsonify({"error": "campaign_id is required"}), 400
 
-    # 2) Find the matching campaign by its 'id'
-    job = next((j for j in load_jobs() if j.get("id") == campaign_id), None)
+    # 2) Lookup job
+    job = next((j for j in load_jobs() if j["id"] == campaign_id), None)
     if not job:
         return jsonify({"error": "Campaign not found"}), 404
 
-    # 3) Create a unique run ID for this execution (for SSE)
+    # 3) Create an SSE queue
     run_id = str(uuid.uuid4())
     q = queue.Queue()
     app.job_queues[run_id] = q
 
-    # 4) Background runner thread
+    # 4) Launch background thread
     def _runner():
-        def progress_cb(step, total, message):
-            q.put({"step": step, "total": total, "message": message})
+        try:
+            # a) Read script
+            script_path = Path(job["example_script_file"])
+            example_script = script_path.read_text(encoding="utf-8")
 
-        # Load the example script from disk
-        script_path = Path(job["example_script_file"])
-        example_script = script_path.read_text(encoding="utf-8")
+            # b) Call the core function
+            success, output_path = create_video_job(
+                product                = job["product"],
+                persona                = job["persona"],
+                setting                = job["setting"],
+                emotion                = job["emotion"],
+                hook                   = job["hook"],
+                elevenlabs_voice_id    = job["elevenlabs_voice_id"],
+                avatar_video_path      = job["avatar_video_path"],
+                example_script_content = example_script,
+                remove_silence         = job.get("remove_silence", False),
+                language               = job.get("language", "English"),
+                enhance_for_elevenlabs = job.get("enhance_for_elevenlabs", False),
+                brand_name             = job.get("brand_name", ""),
+                openai_api_key         = os.getenv("OPENAI_API_KEY"),
+                elevenlabs_api_key     = os.getenv("ELEVENLABS_API_KEY"),
+                dreamface_api_key      = os.getenv("DREAMFACE_API_KEY"),
+                gcs_bucket_name        = os.getenv("GCS_BUCKET_NAME"),
+                job_name               = job["job_name"],
+                progress_callback      = lambda step, total, msg: q.put({
+                    "type": "progress", "step": step, "total": total, "message": msg
+                })
+            )
 
-        # Invoke the core job logic
-        success, output_path = create_video_job(
-            product                = job["product"],
-            persona                = job["persona"],
-            setting                = job["setting"],
-            emotion                = job["emotion"],
-            hook                   = job["hook"],
-            elevenlabs_voice_id    = job["elevenlabs_voice_id"],
-            avatar_video_path      = job["avatar_video_path"],
-            example_script_content = example_script,
-            remove_silence         = job.get("remove_silence", False),
-            language               = job.get("language", "English"),
-            enhance_for_elevenlabs = job.get("enhance_for_elevenlabs", False),
-            brand_name             = job.get("brand_name", ""),
-            openai_api_key         = os.getenv("OPENAI_API_KEY"),
-            elevenlabs_api_key     = os.getenv("ELEVENLABS_API_KEY"),
-            dreamface_api_key      = os.getenv("DREAMFACE_API_KEY"),
-            gcs_bucket_name        = os.getenv("GCS_BUCKET_NAME"),
-            job_name               = job["job_name"],
-            progress_callback      = progress_cb
-        )
+            # c) If the function returned failure without exception
+            if not success:
+                # In case of error using the same string to path the error message
+                error_message = output_path
+                q.put({
+                    "type": "error",
+                    "message": f"Job failed without exception. Last error message: {error_message}"
+                })
+                app.job_results[run_id] = {"success": False, "error": "create_video_job returned False"}
+                return
 
-        # Signal completion
-        q.put({"done": True, "success": success, "output_path": output_path})
-        app.job_results[run_id] = {"success": success, "output_path": output_path}
+            # d) Signal success
+            q.put({"type": "done", "success": True, "output_path": output_path})
+            app.job_results[run_id] = {"success": True, "output_path": output_path}
+
+        except Exception as e:
+            # e) Catch and emit any unexpected exception
+            err = str(e)
+            q.put({"type": "error", "Job failed with exception, message": err})
+            app.job_results[run_id] = {"success": False, "error": err}
+            # No re-raise: we want the thread to exit gracefully
 
     threading.Thread(target=_runner, daemon=True).start()
 
@@ -346,12 +364,15 @@ def progress(run_id):
         if not q:
             yield 'event: error\ndata: {"message":"Unknown run"}\n\n'
             return
+
         while True:
             msg = q.get()
-            if msg.get("done"):
-                yield f'event: done\ndata: {json.dumps(msg)}\n\n'
+            # Normalize event type
+            et = msg.get("type", "progress")
+            data = {k: v for k, v in msg.items() if k != "type"}
+            yield f"event: {et}\ndata: {json.dumps(data)}\n\n"
+            if et in ("done", "error"):
                 break
-            yield f'event: progress\ndata: {json.dumps(msg)}\n\n'
 
     return Response(event_stream(), mimetype="text/event-stream")
 

@@ -765,10 +765,11 @@ def create_video_job(
     job_name: str = "Unnamed Job",
     # --- Progress callback ---
     progress_callback: Optional[Callable[[int, int, str], None]] = None
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool, str]:
     """
-    Performs the complete video generation process for a single job,
-    including optional product overlay.
+    Performs the complete video generation process for a single job.
+    Returns (True, output_path) on success,
+    or (False, last_error_message) on failure.
     """
     # === Optional: Add Repeatable Randomness Seed ===
     # If you want the *same* job_name to always pick the same random values (useful for debugging)
@@ -777,29 +778,40 @@ def create_video_job(
     # === End Optional Seed ===
 
     steps = [
+        "Initialization...",
         "Generating script",
         "Synthesizing audio",
         "Uploading to GCS",
+        "Signing uploaded files",
         "Running lip-sync",
-        "Merging video/audio",
+        "Checking generated video",
+        "Removing silence",
         "Uploading video result"
     ]
     total_steps = len(steps)
     step = 0
+    last_error_message = ""
 
     print(f"\n--- Starting Job: {job_name} [{datetime.now().isoformat()}] ---")
     job_start_time = time.time()
+    # Step 1: Initialization
+    if progress_callback:
+        progress_callback(step, total_steps, steps[step])
+        step += 1
 
     # --- Validate Inputs ---
     if not all([product, persona, setting, emotion, hook, elevenlabs_voice_id, avatar_video_path, example_script_content]):
         print(f"ERROR [{job_name}]: Missing one or more required text parameters.")
-        return False, None
+        last_error_message = "Missing one or more required text parameters."
+        return False, last_error_message
     if not all([openai_api_key, elevenlabs_api_key, dreamface_api_key, gcs_bucket_name]):
         print(f"ERROR [{job_name}]: Missing one or more required API keys or GCS bucket name.")
-        return False, None
+        last_error_message = "Missing one or more required API keys or GCS bucket name"
+        return False, last_error_message
     if not os.path.exists(avatar_video_path):
         print(f"ERROR [{job_name}]: Avatar video file not found: {avatar_video_path}")
-        return False, None
+        last_error_message = f"Avatar video file not found: {avatar_video_path}"
+        return False, last_error_message
     if len(example_script_content.strip()) < 50:
         print(f"Warning [{job_name}]: Example script content seems very short.")
 
@@ -809,13 +821,17 @@ def create_video_job(
         print(f"[{job_name}] OpenAI client initialized.")
     except Exception as e:
         print(f"ERROR [{job_name}] initializing OpenAI client: {e}")
-        traceback.print_exc(); return False, None # Add traceback and return
+        traceback.print_exc()    # Add traceback and return
+        last_error_message = f"Failed initializing OpenAI client: {e}"
+        return False, last_error_message
     try:
         elevenlabs_client = ElevenLabs(api_key=elevenlabs_api_key)
         print(f"[{job_name}] ElevenLabs client initialized.")
     except Exception as e:
-        print(f"ERROR [{job_name}] initializing ElevenLabs client: {e}")
-        traceback.print_exc(); return False, None # Add traceback and return
+        print(f"ERROR [{job_name}] Failed initializing ElevenLabs client: {e}")
+        traceback.print_exc()    # Add traceback and return
+        last_error_message = f"Failed initializing ElevenLabs client: {e}"
+        return False, last_error_message
 
     # --- Unique Identifiers and Paths for this Job ---
     run_uuid = uuid.uuid4().hex[:8]
@@ -901,7 +917,8 @@ def create_video_job(
          traceback.print_exc()
          # Cannot proceed without output_file_base, maybe raise or return False?
          print(f"ERROR [{job_name}]: Cannot define output_file_base, exiting job.")
-         return False, None # Exit the job cleanly if this fails
+         last_error_message = "Cannot define output_file_base, exiting job" # Exit the job cleanly if this fails
+         return False, last_error_message
 
     # --- Define other specific output filenames that depend on output_file_base ---
     # Make sure these come AFTER output_file_base is successfully defined
@@ -931,7 +948,10 @@ def create_video_job(
         generated_script = generate_script(
             openai_client, product, persona, setting, emotion, hook, example_script_content, language=language, enhance_for_elevenlabs=enhance_for_elevenlabs, brand_name=brand_name
         )
-        if not generated_script: print(f"ERROR [{job_name}]: Script generation failed."); return False, None
+        if not generated_script:
+            print(f"ERROR [{job_name}]: Script generation failed.")
+            last_error_message = "Script generation failed"
+            return False, last_error_message
         print(f"[{job_name}] Generated Script Preview:\n---\n{generated_script[:200]}...\n---")
         print(f"[{job_name}] Step 2 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
 
@@ -943,7 +963,10 @@ def create_video_job(
         audio_success = generate_audio(
             elevenlabs_client, generated_script, elevenlabs_voice_id, temp_audio_filename
         )
-        if not audio_success: print(f"ERROR [{job_name}]: Audio generation failed."); return False, None
+        if not audio_success:
+            print(f"ERROR [{job_name}]: Audio generation failed.")
+            last_error_message = "Audio generation failed"
+            return False, last_error_message
         print(f"[{job_name}] Step 3 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
 
         # Step 4: Upload & Get URLs
@@ -956,41 +979,68 @@ def create_video_job(
         video_upload_success = False
         if audio_upload_success:
             video_upload_success = upload_to_gcs(gcs_bucket_name, avatar_video_path, gcs_video_blob_name)
-        if not (audio_upload_success and video_upload_success): print(f"ERROR [{job_name}]: GCS upload failed."); return False, None # Cleanup in finally
+        if not (audio_upload_success and video_upload_success): # Cleanup in finally
+            print(f"ERROR [{job_name}]: GCS upload failed.")
+            last_error_message = "GCS upload failed"
+            return False, last_error_message
+
+        # Step 5: Signing uploaded files
+        if progress_callback:
+            progress_callback(step, total_steps, steps[step])
+            step += 1
         audio_signed_url = generate_signed_url(gcs_bucket_name, gcs_audio_blob_name)
         video_signed_url = generate_signed_url(gcs_bucket_name, gcs_video_blob_name)
-        if not (audio_signed_url and video_signed_url): print(f"ERROR [{job_name}]: Signed URL generation failed."); return False, None # Cleanup in finally
+        if not (audio_signed_url and video_signed_url): # Cleanup in finally
+            print(f"ERROR [{job_name}]: Signed URL generation failed.")
+            last_error_message = "Signed URL generation failed"
+            return False, last_error_message
         print(f"[{job_name}] Step 4 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
         # Delete local temp audio *after* GCS upload confirmed successful
         try: os.remove(temp_audio_filename); print(f"[{job_name}] Deleted local temp audio: {temp_audio_filename}")
         except OSError as e: print(f"Warning [{job_name}]: Failed to delete {temp_audio_filename}: {e}")
 
-        # Step 5: DreamFace Lip-Sync
+        # Step 6: DreamFace Lip-Sync
         if progress_callback:
             progress_callback(step, total_steps, steps[step])
             step += 1
         print(f"\n--- [{job_name}] Step 5: DreamFace Lip-Sync ---")
         task_id = submit_dreamface_job(dreamface_api_key, video_signed_url, audio_signed_url)
-        if not task_id: print(f"ERROR [{job_name}]: DreamFace job submission failed."); return False, None # Cleanup in finally
+        if not task_id:         # Cleanup in finally
+            print(f"ERROR [{job_name}]: DreamFace job submission failed.")
+            last_error_message = "DreamFace job submission failed"
+            return False, last_error_message
         final_video_url = poll_dreamface_job(dreamface_api_key, task_id)
-        if not final_video_url: print(f"ERROR [{job_name}]: Failed to get final video URL from DreamFace."); return False, None # Cleanup in finally
+        if not final_video_url:  # Cleanup in finally
+            print(f"ERROR [{job_name}]: Failed to get final video URL from DreamFace.")
+            last_error_message = "Failed to get final video URL from DreamFace"
+            return False, last_error_message
+        # Step 7: Checking generated video
+        if progress_callback:
+            progress_callback(step, total_steps, steps[step])
+            if remove_silence:
+                step += 1
+            else:
+                step += 2
         # Ensure download path exists
         os.makedirs(os.path.dirname(raw_downloaded_video_path) or '.', exist_ok=True)
         download_success = download_video(final_video_url, raw_downloaded_video_path)
         if not download_success or not os.path.exists(raw_downloaded_video_path) or os.path.getsize(raw_downloaded_video_path) == 0:
-            print(f"ERROR [{job_name}]: Failed to download, verify, or got empty file from DreamFace: {raw_downloaded_video_path}."); return False, None
+            print(f"ERROR [{job_name}]: Failed to download, verify, or got empty file from DreamFace: {raw_downloaded_video_path}.")
+            last_error_message = f"Failed to download, verify, or got empty file from DreamFace: {raw_downloaded_video_path}"
+            return False, last_error_message
         print(f"[{job_name}] Raw lip-synced video saved locally temporarily as: {raw_downloaded_video_path}")
         print(f"[{job_name}] Step 5 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
 
-        # Step 6: Finalize Base Video (Silence Removal / Rename)
-        if progress_callback:
-            progress_callback(step, total_steps, steps[step])
-            step += 1
+
         print(f"\n--- [{job_name}] Step 6: Finalize Base Video (Silence Removal / Rename) ---")
         current_video_path = raw_downloaded_video_path # Start with the downloaded path
         intended_final_path = None # Path *before* overlay
 
         if remove_silence:
+            # Step 8: Silence Removal / Rename
+            if progress_callback:
+                progress_callback(step, total_steps, steps[step])
+                step += 1
             print(f"[{job_name}] Attempting silence removal from {current_video_path} to {edited_video_path}...")
             # Ensure output dir for edited video exists
             os.makedirs(os.path.dirname(edited_video_path) or '.', exist_ok=True)
@@ -1035,13 +1085,14 @@ def create_video_job(
 
         # === Crucial Check ===
         if not intended_final_path or not os.path.exists(intended_final_path) or os.path.getsize(intended_final_path) == 0:
-            print(f"ERROR [{job_name}]: Failed to determine valid base video path after Step 6.")
+            print(f"ERROR [{job_name}]: Failed to determine valid base video path after finalization.")
             print(f"  Intended path: '{intended_final_path}'")
             print(f"  Check logs for download/rename/silence removal errors.")
             # If original download still exists, maybe keep it? Check raw_downloaded_video_path
             if raw_downloaded_video_path and os.path.exists(raw_downloaded_video_path):
                  print(f"  Original downloaded file still exists at: {raw_downloaded_video_path}")
-            return False, None # Fail the job here
+            last_error_message = "Failed to determine valid base video path after finalization"
+            return False, last_error_message
 
         print(f"[{job_name}] Base video path set to: {intended_final_path}")
         print(f"[{job_name}] Step 6 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
@@ -1049,14 +1100,16 @@ def create_video_job(
 
         # --- Final Check (uses final_output_path which might now be the _overlay path) ---
         print(f"[{job_name}] Performing final check on path: {final_output_path}")
-        if not final_output_path or not os.path.exists(final_output_path) or os.path.getsize(final_output_path) == 0:
+        if not final_output_path or not os.path.exists(final_output_path) or os.path.getsize(final_output_path) == 0: # Fail the job
             print(f"ERROR [{job_name}]: Final video output path ('{final_output_path}') is missing or empty after all steps.")
-            return False, None # Fail the job
+            last_error_message = f"Final video output path ('{final_output_path}') is missing or empty after all steps"
+            return False, last_error_message
 
         # Step 9: Upload to Drive (Placeholder - uses the potentially updated final_output_path)
+        # Finalizing result
         if progress_callback:
             progress_callback(step, total_steps, steps[step])
-            step += 1
+            # step += 1
         print(f"\n--- [{job_name}] Step 9: Upload to Google Drive ---")
         print(f"[{job_name}] (Placeholder) Upload Final Video ({final_output_path}) to Drive.")
 
@@ -1070,7 +1123,8 @@ def create_video_job(
         print(f"\n--- Job '{job_name}' FAILED during main processing ---")
         print(f"Error: {e}")
         traceback.print_exc()
-        return False, None
+        last_error_message = f"Job '{job_name}' FAILED during main processing"
+        return False, last_error_message
 
     finally:
         # --- Cleanup ---
