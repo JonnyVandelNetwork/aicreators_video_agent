@@ -155,7 +155,8 @@ def add_campaign():
     required = [
         "job_name", "product", "persona", "setting",
         "emotion", "hook", "elevenlabs_voice_id",
-        "language", "avatar_video_path", "example_script_file"
+        "language", "avatar_video_path", "avatar_id",
+        "example_script_file", "script_id"
     ]
     missing = [f for f in required if not data.get(f)]
     if missing:
@@ -215,6 +216,8 @@ def edit_campaign(campaign_id):
                 "job_name", "product", "persona", "setting", "emotion", "hook",
                 "elevenlabs_voice_id", "language", "brand_name",
                 "remove_silence", "enhance_for_elevenlabs",
+                "avatar_video_path", "avatar_id",
+                "example_script_file", "script_id",
                 "output_path", "enabled"
             ]:
                 if field in data:
