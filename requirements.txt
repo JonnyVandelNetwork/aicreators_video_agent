@@ -4,3 +4,4 @@ python-dotenv
 PyYAML
 requests
 google-cloud-storage
+imageio-ffmpeg

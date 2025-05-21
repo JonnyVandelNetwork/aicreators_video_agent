@@ -4,6 +4,7 @@ import argparse
 import time
 import uuid
 import requests
+import imageio_ffmpeg # For managing ffmpeg on different envs
 import subprocess # For running ffmpeg
 import re # For parsing ffmpeg output
 import shutil # For copying files
@@ -485,8 +486,15 @@ def remove_silence_from_video(input_path: str, output_path: str) -> bool:
         print(f"DEBUG: Error - Input video for silence removal not found: {input_path}")
         return False
     print("DEBUG: Detecting silence intervals...")
+
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
+    if not ffmpeg_exe:
+        print("ERROR: ffmpeg not found. Please install ffmpeg or add it to your PATH.")
+        return False
+
     silence_detect_cmd = [
-        'ffmpeg', '-nostdin', '-i', input_path,
+        ffmpeg_exe, '-nostdin', '-i', input_path,
         '-af', f'silencedetect=noise={SILENCE_THRESHOLD_DB}:d={SILENCE_MIN_DURATION_S}',
         '-f', 'null', '-'
     ]
@@ -702,7 +710,7 @@ def remove_silence_from_video(input_path: str, output_path: str) -> bool:
 
     print(f"DEBUG: Generating final trimmed video with audio fades: {output_path}...")
     final_cmd = [
-        'ffmpeg', '-hide_banner', '-loglevel', 'warning', # Less verbose output
+        ffmpeg_exe, '-hide_banner', '-loglevel', 'warning', # Less verbose output
         '-i', input_path,
         '-filter_complex', filter_complex_string,
         '-map', '[outv]', # Map final video stream
