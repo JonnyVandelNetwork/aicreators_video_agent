@@ -20,6 +20,7 @@ import math # For ceiling function later
 from typing import Callable, Optional, Tuple
 import os, re, time, uuid, traceback
 from datetime import datetime
+from pathlib import Path
 
 # --- Whisper and FFmpeg specific imports ---
 try:
@@ -28,6 +29,15 @@ except ImportError:
     print("WARNING: Whisper library not found. Run 'pip install -U openai-whisper'. Overlay feature will fail.")
     whisper = None # Set whisper to None if import fails
 
+# ─── Global Working Directory Setup TODO ────────────────────────────────
+HOME_DIR       = Path.home() / ".zyra-video-agent"
+WORKING_DIR    = HOME_DIR / "working-dir"
+OUTPUT_BASE_DIR = HOME_DIR / "output"
+
+# Make sure they exist
+for d in (WORKING_DIR, OUTPUT_BASE_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
 # --- Configuration ---
 SCRIPT_VERSION = "1.17 (Overlay Feature Added, Corrected Placement, Helpers Included)" # Updated version
 OPENAI_MODEL = "gpt-4o"
@@ -35,7 +45,6 @@ ELEVENLABS_MODEL = "eleven_multilingual_v2"
 TEMP_AUDIO_FILENAME_BASE = "temp_generated_audio" # Base name, will add UUID
 DREAMFACE_SUBMIT_URL = "https://api.newportai.com/api/async/talking_face"
 DREAMFACE_POLL_URL = "https://api.newportai.com/api/getAsyncResult"
-OUTPUT_BASE_DIR = "output" # Base folder for all generated videos
 
 # Polling config
 POLLING_INTERVAL_SECONDS = 15
@@ -836,8 +845,8 @@ def create_video_job(
     # --- Unique Identifiers and Paths for this Job ---
     run_uuid = uuid.uuid4().hex[:8]
     timestamp_uuid = f"{int(time.time())}_{run_uuid}"
-    temp_audio_filename = f"{TEMP_AUDIO_FILENAME_BASE}_{run_uuid}.mp3"
-    raw_downloaded_video_path = f"temp_video_raw_{timestamp_uuid}.mp4"
+    temp_audio_filename = str(WORKING_DIR / f"{TEMP_AUDIO_FILENAME_BASE}_{run_uuid}.mp3")
+    raw_downloaded_video_path = str(WORKING_DIR / f"temp_video_raw_{timestamp_uuid}.mp4")
     # Define GCS names early for use in finally block, even if upload fails
     gcs_audio_blob_name = f"audio_uploads/{timestamp_uuid}_audio.mp3"
     gcs_video_blob_name = f"video_uploads/{timestamp_uuid}_avatar.mp4"

@@ -17,7 +17,7 @@ if __name__ == "__main__":
     thread.start()
 
     # Open the user’s default browser to the UI
-    webbrowser.open(f"http://localhost:{PORT}")
+    # webbrowser.open(f"http://localhost:{PORT}")
 
     # Keep the main thread alive until the server thread exits
     thread.join()
