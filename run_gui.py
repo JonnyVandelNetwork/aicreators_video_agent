@@ -4,8 +4,8 @@ import threading
 import webbrowser
 from app import app
 
-# Read port from ENV if set, else default to 5056
-PORT = int(os.getenv("VIDEO_AGENT_PORT", 5056))
+# Read port from ENV if set, else default to 2026
+PORT = int(os.getenv("VIDEO_AGENT_PORT", 2026))
 
 def serve():
     # Turn off debug in the bundled exe

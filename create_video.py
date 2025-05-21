@@ -778,6 +778,7 @@ def create_video_job(
     remove_silence: bool, language: str, enhance_for_elevenlabs: bool, brand_name: str,
     # --- API keys / Config ---
     openai_api_key: str, elevenlabs_api_key: str, dreamface_api_key: str, gcs_bucket_name: str,
+    output_path: str,
     # --- Job Info ---
     job_name: str = "Unnamed Job",
     # --- Progress callback ---
@@ -874,14 +875,20 @@ def create_video_job(
     # --- Define Output Paths ---
     today_date_str = datetime.now().strftime('%Y-%m-%d')
     print(f"DEBUG: today_date_str = {today_date_str}") # DEBUG PRINT
-    print(f"DEBUG: OUTPUT_BASE_DIR = {OUTPUT_BASE_DIR}") # DEBUG PRINT
+    print(f"DEBUG: OUTPUT_BASE_DIR = {output_path}") # DEBUG PRINT
     print(f"DEBUG: sanitized_product_name = {sanitized_product_name}") # DEBUG PRINT
 
     # Define the output_product_folder path string first
     # Wrap this in its own try-except in case os.path.join fails
     output_product_folder = None # Initialize to None
+    path = None
+    if not os.path.exists(output_path):
+        path = OUTPUT_BASE_DIR
+    else:
+        path = output_path
+
     try:
-        output_product_folder_path_string = os.path.join(OUTPUT_BASE_DIR, today_date_str, sanitized_product_name)
+        output_product_folder_path_string = os.path.join(path, today_date_str, sanitized_product_name)
         print(f"DEBUG: Attempting to define output_product_folder as string: '{output_product_folder_path_string}'") # DEBUG PRINT
         output_product_folder = output_product_folder_path_string # Assign the string path
     except Exception as join_e:

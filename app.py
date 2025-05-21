@@ -262,7 +262,8 @@ def get_settings():
         "ELEVENLABS_API_KEY",
         "DREAMFACE_API_KEY",
         "GCS_BUCKET_NAME",
-        "GOOGLE_APPLICATION_CREDENTIALS"
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "OUTPUT_PATH"
     ]
     current = {k: os.getenv(k, "") for k in keys}
     return jsonify(current)
@@ -274,7 +275,8 @@ def save_settings():
         "ELEVENLABS_API_KEY",
         "DREAMFACE_API_KEY",
         "GCS_BUCKET_NAME",
-        "GOOGLE_APPLICATION_CREDENTIALS"
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "OUTPUT_PATH"
     ]
     for k in keys:
         val = request.form.get(k, "").strip()
@@ -328,6 +330,7 @@ def run_job():
                 dreamface_api_key      = os.getenv("DREAMFACE_API_KEY"),
                 gcs_bucket_name        = os.getenv("GCS_BUCKET_NAME"),
                 job_name               = job["job_name"],
+                output_path            = os.getenv("OUTPUT_PATH"),
                 progress_callback      = lambda step, total, msg: q.put({
                     "type": "progress", "step": step, "total": total, "message": msg
                 })
@@ -569,5 +572,5 @@ def edit_script(script_id):
 
 # ─── Optional: allow direct `python app.py` for debugging ────────────────────
 if __name__ == "__main__":
-    port = int(os.getenv("VIDEO_AGENT_PORT", 5056))
+    port = int(os.getenv("VIDEO_AGENT_PORT", 2026))
     app.run(host="localhost", port=port, debug=True)
