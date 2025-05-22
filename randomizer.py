@@ -6,6 +6,7 @@ import librosa
 import soundfile as sf
 import random
 import os
+import imageio_ffmpeg # For managing ffmpeg on different envs
 import subprocess
 import json
 import traceback
@@ -1707,8 +1708,10 @@ def apply_ffmpeg_effects_and_reencode_randomized(
                 meta_log["added_random_keys"] = added_keys
     ffmpeg_log["metadata"] = meta_log
 
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
     # --- Assemble FFmpeg Command ---
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"]  # Less verbose
+    cmd = [ffmpeg_exe, "-y", "-hide_banner", "-loglevel", "warning"]  # Less verbose
     cmd.extend(input_options)
     cmd.extend(filter_complex)
     cmd.extend(audio_mapping)
@@ -1805,10 +1808,12 @@ def randomize_video(
 
     # --- Main Randomization Pipeline ---
     try:
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
         # 1. Extract Original Audio
         print("Extracting audio for randomization...")
         extract_cmd = [
-            "ffmpeg",
+            ffmpeg_exe,
             "-y",
             "-i",
             input_path,

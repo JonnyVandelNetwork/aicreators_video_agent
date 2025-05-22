@@ -23,6 +23,8 @@ import os, re, time, uuid, traceback
 from datetime import datetime
 from pathlib import Path
 
+from randomizer import randomize_video
+
 # --- Whisper and FFmpeg specific imports ---
 try:
     import whisper
@@ -778,7 +780,7 @@ def create_video_job(
     remove_silence: bool, language: str, enhance_for_elevenlabs: bool, brand_name: str,
     # --- API keys / Config ---
     openai_api_key: str, elevenlabs_api_key: str, dreamface_api_key: str, gcs_bucket_name: str,
-    output_path: str,
+    output_path: str, use_randomization: bool, randomization_intensity: str = "medium",
     # --- Job Info ---
     job_name: str = "Unnamed Job",
     # --- Progress callback ---
@@ -804,6 +806,8 @@ def create_video_job(
         "Running lip-sync",
         "Checking generated video",
         "Removing silence",
+        "Preparing video base",
+        "Randomizing video",
         "Uploading video result"
     ]
     total_steps = len(steps)
@@ -1122,6 +1126,107 @@ def create_video_job(
         print(f"[{job_name}] Step 6 completed in {time.time() - step_start_time:.2f}s"); step_start_time = time.time()
         final_output_path = intended_final_path
 
+        # --- Step 7: Randomization (Optional) --- << NEW STEP POSITION
+        print(f"\n--- [{job_name}] Step 7: Randomization (Optional) ---")
+        progress_callback(step, total_steps, steps[step])
+        if use_randomization:
+            step += 1
+        else:
+            step += 2
+        # The input to this step is the path determined by Step 6
+        path_before_randomization = intended_final_path
+        path_after_randomization = path_before_randomization  # Default to previous path if randomization skipped/fails
+        applied_randomization_settings = None  # Initialize log variable
+
+        # Check the 'use_randomization' flag passed into this function
+        if use_randomization:
+            print(
+                f"[{job_name}] Randomization enabled. Attempting (Intensity: {randomization_intensity}) on: {path_before_randomization}")
+            if progress_callback:
+                progress_callback(step, total_steps, steps[step])
+                step += 1
+            # Ensure the base path for output (directory part) exists
+            # 'output_file_base' should have been defined earlier based on output dir and job name
+            os.makedirs(os.path.dirname(output_file_base), exist_ok=True)
+
+            randomization_log_path = str(WORKING_DIR)
+            # --- Call the imported randomize_video function ---
+            # It expects input path, base for output names, and intensity.
+            # It returns the path to the new video and a dictionary of applied settings.
+            randomized_path_output, applied_randomization_settings = randomize_video(
+                input_path=path_before_randomization,
+                output_base_path=output_file_base,
+                intensity=randomization_intensity,
+                randomization_log_path=randomization_log_path,
+            )
+
+            # Already assigned above from return value, so this line is now unnecessary
+            # You can just delete that old assignment
+
+            # --- Check if randomization was successful ---
+            if randomized_path_output and os.path.exists(randomized_path_output) and os.path.getsize(
+                    randomized_path_output) > 0:
+                print(f"[{job_name}] Randomization successful. Path is now: {randomized_path_output}")
+                path_after_randomization = randomized_path_output  # Update the path for the next step
+
+                # If successful, delete the input file to randomization (the pre-randomized version)
+                if path_before_randomization != path_after_randomization:  # Safety check
+                    try:
+                        print(f"[{job_name}] Removing pre-randomization file: {path_before_randomization}")
+                        os.remove(path_before_randomization)
+                    except OSError as e:
+                        print(
+                            f"Warning [{job_name}]: Failed to remove pre-randomization file {path_before_randomization}: {e}")
+            else:
+                # Randomization function failed or produced an empty file
+                print(f"Warning [{job_name}]: Randomization failed or produced empty file.")
+                # The path variable 'path_after_randomization' still holds the previous path (fallback)
+                print(f"[{job_name}] Using non-randomized video path for subsequent steps: {path_after_randomization}")
+                # Try to clean up the failed/empty randomized file if it exists
+                if randomized_path_output and os.path.exists(randomized_path_output):
+                    try:
+                        os.remove(randomized_path_output)
+                    except OSError:
+                        pass
+                # Update log status if we got a log dictionary back
+                if applied_randomization_settings:
+                    applied_randomization_settings["status"] = "failed_fallback"
+
+        else:
+            # Randomization was disabled by the 'use_randomization' flag for this job
+            print(f"[{job_name}] Skipping randomization (use_randomization is False).")
+            # 'path_after_randomization' correctly holds the input path already
+
+        # --- Sanity Check (Make sure we have a valid video file before proceeding) ---
+        if not path_after_randomization or not os.path.exists(path_after_randomization) or os.path.getsize(
+                path_after_randomization) == 0:
+            print(
+                f"ERROR [{job_name}]: Video path is invalid after Step 7 (Randomization): '{path_after_randomization}'")
+            last_error_message = f"Video path is invalid after Step 7 (Randomization): '{path_after_randomization}'"
+            # Log failure details if possible before returning
+            json_output_folder = os.path.join(OUTPUT_BASE_DIR, "json")
+            os.makedirs(json_output_folder, exist_ok=True)
+            randomization_log_path = os.path.join(json_output_folder, f"{job_name}_{run_uuid}_randomizations.json")
+
+            if applied_randomization_settings and randomization_log_path:
+                try:
+                    applied_randomization_settings["status"] = "job_failed"
+                    applied_randomization_settings["job_error"] = "Video missing or empty after randomization step"
+                    # Ensure directory exists before writing log
+                    os.makedirs(os.path.dirname(randomization_log_path), exist_ok=True)
+                    with open(randomization_log_path, 'w') as f:
+                        json.dump(applied_randomization_settings, f, indent=4)
+                except Exception as log_e:
+                    print(f"Warning: Failed to write job failure log: {log_e}")
+                    last_error_message = f"Video path is invalid after Step 7 (Randomization): '{path_after_randomization}'"
+            return False, last_error_message # Fail the entire job
+
+        # --- Log completion of this step ---
+        current_step_time = time.time() - step_start_time  # Calculate time for this step
+        print(f"[{job_name}] Step 7 completed in {current_step_time:.2f}s");
+        step_start_time = time.time()  # Reset timer for the next step
+        final_output_path = path_after_randomization
+
         # --- Final Check (uses final_output_path which might now be the _overlay path) ---
         print(f"[{job_name}] Performing final check on path: {final_output_path}")
         if not final_output_path or not os.path.exists(final_output_path) or os.path.getsize(final_output_path) == 0: # Fail the job
@@ -1147,7 +1252,7 @@ def create_video_job(
         print(f"\n--- Job '{job_name}' FAILED during main processing ---")
         print(f"Error: {e}")
         traceback.print_exc()
-        last_error_message = f"Job '{job_name}' FAILED during main processing"
+        last_error_message = f"Job '{job_name}' FAILED during main processing {e}"
         return False, last_error_message
 
     finally:

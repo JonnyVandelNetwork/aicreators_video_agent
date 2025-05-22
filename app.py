@@ -141,7 +141,6 @@ def add_campaign():
       "brand_name": "MyBrand",                 # optional
       "remove_silence": true,                  # optional
       "enhance_for_elevenlabs": false,         # optional
-      "output_path": "/full/path/to/output.mp4" # optional
     }
     """
 
@@ -156,7 +155,7 @@ def add_campaign():
         "job_name", "product", "persona", "setting",
         "emotion", "hook", "elevenlabs_voice_id",
         "language", "avatar_video_path", "avatar_id",
-        "example_script_file", "script_id"
+        "example_script_file", "script_id", "randomization_intensity"
     ]
     missing = [f for f in required if not data.get(f)]
     if missing:
@@ -167,12 +166,12 @@ def add_campaign():
     job["brand_name"] = data.get("brand_name", "")
     job["remove_silence"] = bool(data.get("remove_silence"))
     job["enhance_for_elevenlabs"] = bool(data.get("enhance_for_elevenlabs"))
+    job["use_randomization"] = bool(data.get("use_randomization"))
     job["enabled"] = True
 
     # 3) Metadata
     job["id"] = uuid.uuid4().hex
     job["created_at"] = datetime.now().isoformat()
-    job["output_path"] = data.get("output_path")
 
     # 4) Persist
     jobs = load_jobs()
@@ -198,7 +197,6 @@ def edit_campaign(campaign_id):
       - brand_name
       - remove_silence (boolean)
       - enhance_for_elevenlabs (boolean)
-      - output_path
       - enabled (boolean)
     """
     # 1) Load existing campaigns
@@ -216,9 +214,10 @@ def edit_campaign(campaign_id):
                 "job_name", "product", "persona", "setting", "emotion", "hook",
                 "elevenlabs_voice_id", "language", "brand_name",
                 "remove_silence", "enhance_for_elevenlabs",
+                "use_randomization", "randomization_intensity",
                 "avatar_video_path", "avatar_id",
                 "example_script_file", "script_id",
-                "output_path", "enabled"
+                "enabled"
             ]:
                 if field in data:
                     job[field] = data[field]
@@ -322,6 +321,8 @@ def run_job():
                 avatar_video_path      = job["avatar_video_path"],
                 example_script_content = example_script,
                 remove_silence         = job.get("remove_silence", False),
+                use_randomization      = job.get("use_randomization", False),
+                randomization_intensity= job.get("randomization_intensity"),
                 language               = job.get("language", "English"),
                 enhance_for_elevenlabs = job.get("enhance_for_elevenlabs", False),
                 brand_name             = job.get("brand_name", ""),
