@@ -637,7 +637,6 @@ DEFAULT_CONFIG = {
         "audio_bitrate_range": [96, 160],
     },
     "output_options": {
-        "temp_dir": "./temp_processing",
         "cleanup_temp": True,
     },
 }
@@ -1727,6 +1726,7 @@ def apply_ffmpeg_effects_and_reencode_randomized(
 def randomize_video(
     input_path,
     output_base_path,
+    working_dir,
     intensity="medium",
     config_profiles=RANDOMIZATION_PROFILES,
     randomization_log_path=None,  # <- New optional param
@@ -1759,7 +1759,7 @@ def randomize_video(
     }
 
     # --- Temporary File Setup ---
-    temp_dir = config["output_options"].get("temp_dir", "./temp_processing")
+    temp_dir = working_dir
     os.makedirs(temp_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     unique_id = (

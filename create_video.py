@@ -1156,6 +1156,7 @@ def create_video_job(
             randomized_path_output, applied_randomization_settings = randomize_video(
                 input_path=path_before_randomization,
                 output_base_path=output_file_base,
+                working_dir=WORKING_DIR,
                 intensity=randomization_intensity,
                 randomization_log_path=randomization_log_path,
             )
