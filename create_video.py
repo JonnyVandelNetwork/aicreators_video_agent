@@ -772,6 +772,191 @@ transcription_cache = {}
 whisper_model = None
 
 
+# === Helper Function for Phase 2: Calculate Overlay Geometry (Revised for Constraints) ===
+def calculate_overlay_geometry(placement_str, relative_size, main_w, main_h, overlay_aspect_ratio,
+                               margin_percent=7):  # Increased default margin to 7%
+    """
+    Calculates overlay X, Y, Width, Height based on placement string, relative size,
+    main video dimensions, overlay aspect ratio, and margin preference.
+    Supports multiple placement positions around the video frame.
+
+    Args:
+        placement_str (str): Position code like "top_left", "middle_right", "bottom_center", etc.
+        relative_size (float): Desired overlay width relative to main video width (e.g., 0.4).
+        main_w (int): Width of the main video in pixels.
+        main_h (int): Height of the main video in pixels.
+        overlay_aspect_ratio (float): Width / Height of the overlay clip itself.
+        margin_percent (int): Percentage margin from edges (default: 7).
+
+    Returns:
+        dict | None: Dictionary {'x': int, 'y': int, 'w': int, 'h': int} or None if inputs are invalid.
+    """
+    if not all([placement_str, relative_size, main_w, main_h, overlay_aspect_ratio]):
+        print("ERROR: Invalid inputs to calculate_overlay_geometry.")
+        return None
+    if main_w <= 0 or main_h <= 0 or overlay_aspect_ratio <= 0 or relative_size <= 0:
+        print("ERROR: Non-positive dimension or size input to calculate_overlay_geometry.")
+        return None
+
+    print(
+        f"Calculating geometry for: placement='{placement_str}', rel_size={relative_size:.2f}, main={main_w}x{main_h}, AR={overlay_aspect_ratio:.2f}")
+
+    # Calculate pixel margins
+    margin_x = int(main_w * margin_percent / 100)
+    margin_y = int(main_h * margin_percent / 100)
+
+    # Calculate overlay dimensions
+    overlay_w = int(relative_size * main_w)
+    overlay_h = int(overlay_w / overlay_aspect_ratio)
+
+    # Ensure overlay fits within the frame (considering potential margins)
+    max_allowable_w = main_w - 2 * margin_x
+    max_allowable_h = main_h - 2 * margin_y  # Max height also constrained by margins now
+    if overlay_w > max_allowable_w:
+        overlay_w = max_allowable_w
+        overlay_h = int(overlay_w / overlay_aspect_ratio)  # Recalculate height if width clamped
+    if overlay_h > max_allowable_h:
+        overlay_h = max_allowable_h
+        overlay_w = int(overlay_h * overlay_aspect_ratio)  # Recalculate width if height clamped
+
+    if overlay_w <= 0 or overlay_h <= 0:
+        print("ERROR: Calculated overlay dimension is zero or negative after margin/size checks.")
+        return None
+
+    # --- Calculate X, Y based on placement string ---
+    x, y = 0, 0  # Default initialization
+
+    # Handle different placement options with proper edge alignment
+    if placement_str == "top_left":
+        x, y = 0, margin_y  # Align to left edge
+    elif placement_str == "top_center":
+        x, y = (main_w - overlay_w) // 2, margin_y
+    elif placement_str == "top_right":
+        x, y = main_w - overlay_w, margin_y  # Align to right edge
+    elif placement_str == "middle_left":
+        x, y = 0, (main_h - overlay_h) // 2  # Align to left edge
+    elif placement_str == "middle_center" or placement_str == "center":
+        x, y = (main_w - overlay_w) // 2, (main_h - overlay_h) // 2
+    elif placement_str == "middle_right":
+        x, y = main_w - overlay_w, (main_h - overlay_h) // 2  # Align to right edge
+    elif placement_str == "bottom_left":
+        x, y = 0, main_h - overlay_h - margin_y  # Align to left edge
+    elif placement_str == "bottom_center":
+        x, y = (main_w - overlay_w) // 2, main_h - overlay_h - margin_y
+    elif placement_str == "bottom_right":
+        x, y = main_w - overlay_w, main_h - overlay_h - margin_y  # Align to right edge
+    else:
+        # Fallback if an unexpected placement string is passed
+        print(f"WARNING: Unsupported placement string '{placement_str}'. Defaulting to middle_left calculation.")
+        x, y = 0, (main_h - overlay_h) // 2  # Default to left edge
+
+    # Final check to prevent going off-screen (shouldn't happen with clamping above, but safe)
+    if x + overlay_w > main_w: x = main_w - overlay_w
+    if y + overlay_h > main_h: y = main_h - overlay_h
+
+    print(f"Calculated Geometry: X={x}, Y={y}, W={overlay_w}, H={overlay_h}")
+    return {'x': x, 'y': y, 'w': overlay_w, 'h': overlay_h}
+# === End Helper Function ===
+
+def get_product_mention_times(audio_path: str, trigger_keywords: list[str], language: str, job_name: str = "Job", desired_duration: float = 5.0) -> tuple[float | None, float | None]: # Added language parameter
+    """
+    Analyzes audio using Whisper to find the FIRST occurrence of any trigger keyword
+    and returns a fixed duration window starting from that point.
+
+    Args:
+        audio_path: Path to the audio file.
+        trigger_keywords: List of keywords (case-insensitive) to trigger the overlay.
+        job_name: Identifier for logging.
+        desired_duration: How long the overlay should last in seconds (default: 5.0).
+                           Adjust this value between 3.0 and 8.0 as needed.
+
+    Returns:
+        A tuple (start_time, end_time) in seconds if a trigger keyword is found,
+        otherwise (None, None).
+    """
+    global whisper_model
+    if whisper is None:
+        print(f"ERROR [{job_name}]: Whisper library not installed. Cannot analyze.")
+        return None, None
+
+    print(f"[{job_name}] Analyzing audio for trigger keywords: {trigger_keywords}")
+
+    # Use cached result if available (optional, clear cache if script logic changes significantly)
+    if audio_path in transcription_cache:
+        print(f"[{job_name}] Using cached transcription for {audio_path}")
+        result = transcription_cache[audio_path]
+    else:
+        try:
+            if whisper_model is None:
+                # --- Ensure correct model is specified here ---
+                target_model = "small.en" # Or "medium.en" etc.
+                print(f"[{job_name}] Loading Whisper model ({target_model})...")
+                whisper_model = whisper.load_model(target_model)
+                print(f"[{job_name}] Whisper model loaded.")
+
+            print(f"[{job_name}] Transcribing audio file: {audio_path} with word timestamps...")
+            language_code = {"english": "en", "spanish": "es"}.get(language.lower(), "en")
+            result = whisper_model.transcribe(audio_path, word_timestamps=True, fp16=False, language=language_code)
+            transcription_cache[audio_path] = result
+            print(f"[{job_name}] Transcription complete.")
+            # Optional: Log full transcript for debugging
+            print(f"DEBUG [{job_name}]: Whisper Transcript Text:\n{result.get('text', 'N/A')}\n-----")
+
+        except Exception as e:
+            print(f"ERROR [{job_name}]: Whisper transcription failed for {audio_path}: {e}")
+            traceback.print_exc()
+            if audio_path in transcription_cache: del transcription_cache[audio_path]
+            return None, None
+
+    # --- Search Logic: Find FIRST trigger keyword ---
+    if not result or 'segments' not in result:
+        print(f"Warning [{job_name}]: Whisper result invalid or missing segments.")
+        return None, None
+
+    # --- Start Paste --- (Paste this block where you just deleted)
+
+    # Prepare initial keywords from the input list
+    base_trigger_keywords = {keyword.lower().strip() for keyword in trigger_keywords if keyword}
+
+    # --- Add conditional keywords based on language ---
+    final_trigger_keywords = set(base_trigger_keywords) # Start with a copy of base keywords
+    # Check language case-insensitively
+    if language and language.lower() == 'spanish':
+        print(f"[{job_name}] Language is Spanish, adding 'gomitas' to trigger keywords.")
+        final_trigger_keywords.add("gomitas") # Add the Spanish word
+    # --- End conditional keywords ---
+
+    # Check if there are any keywords to search for *after* potential additions
+    if not final_trigger_keywords:
+        print(f"Warning [{job_name}]: No valid trigger keywords to search for.")
+        return None, None
+
+    # Use the potentially expanded set of keywords for searching
+    print(f"[{job_name}] Searching for FIRST occurrence of any keyword in {final_trigger_keywords}...")
+
+    # --- End Paste ---
+
+    for segment in result.get('segments', []):
+        for word_info in segment.get('words', []):
+            if not isinstance(word_info, dict) or 'word' not in word_info or 'start' not in word_info:
+                continue # Skip invalid word data
+
+            word_text = word_info['word'].lower().strip(".,!?;:").strip() # Strip punctuation AND whitespace
+
+            if word_text in final_trigger_keywords:
+                # Found the FIRST match!
+                found_start_time = word_info['start']
+                print(f"[{job_name}] Found FIRST trigger keyword '{word_text}' (from search set {final_trigger_keywords}) at {found_start_time:.2f}s")
+                # Calculate end time based on desired duration
+                found_end_time = found_start_time + desired_duration
+                print(f"[{job_name}] Setting overlay end time to {found_end_time:.2f}s ({desired_duration}s duration)")
+                # --- IMPORTANT: Return immediately after finding the first match ---
+                return found_start_time, found_end_time
+
+    # If loop finishes without finding any trigger keyword
+    print(f"[{job_name}] Trigger keywords {final_trigger_keywords} not found in audio.")
+    return None, None
+
 # --- Core Video Generation Function (Modified Signature) ---
 def create_video_job(
     # --- Existing parameters ---
@@ -1228,6 +1413,312 @@ def create_video_job(
         step_start_time = time.time()  # Reset timer for the next step
         final_output_path = path_after_randomization
 
+        # --- Step 8: Product Overlay (Optional) ---
+        print(f"\n--- [{job_name}] Step 8: Product Overlay (Optional) ---")
+        # Input path for this step is the result of Step 7 (Randomization)
+        path_before_overlay = path_after_randomization  # Or whatever variable holds the correct path now
+
+        # This variable will track the final path *resulting* from this step.
+        final_output_path = path_before_overlay
+
+        # === V1.20 Initialize variable BEFORE potential use ===
+        product_clip_path = None  # Initialize here to ensure it always exists
+        # === End Initialization ===
+
+        # === V1.20/Phase 2 START: Get Main Video Dimensions ===
+        main_video_width = None
+        main_video_height = None
+        print(f"[{job_name}] Attempting to get dimensions for main video: {path_before_overlay}")
+        if path_before_overlay and os.path.exists(path_before_overlay):
+            try:
+                ffprobe_cmd = [
+                    'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                    '-show_entries', 'stream=width,height', '-of', 'json', path_before_overlay
+                ]
+                result = subprocess.run(ffprobe_cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+                output_data = json.loads(result.stdout)
+                if output_data and 'streams' in output_data and len(output_data['streams']) > 0:
+                    stream_data = output_data['streams'][0]
+                    main_video_width = stream_data.get('width')
+                    main_video_height = stream_data.get('height')
+                    if isinstance(main_video_width, int) and isinstance(main_video_height, int):
+                        print(f"[{job_name}] Found main video dimensions: {main_video_width}x{main_video_height}")
+                    else:
+                        print(f"WARNING [{job_name}]: ffprobe output missing width/height or they aren't integers.")
+                        main_video_width, main_video_height = None, None  # Reset
+                else:
+                    print(f"WARNING [{job_name}]: ffprobe output does not contain expected streams data.")
+            except FileNotFoundError:
+                print(
+                    f"ERROR [{job_name}]: ffprobe command not found. Ensure FFmpeg (which includes ffprobe) is installed and in your system's PATH.")
+            except subprocess.CalledProcessError as e:
+                print(
+                    f"ERROR [{job_name}]: ffprobe command failed for '{path_before_overlay}'. Return Code: {e.returncode}")
+                print(f"ffprobe stderr: {e.stderr}")
+            except json.JSONDecodeError as e:
+                print(f"ERROR [{job_name}]: Failed to parse ffprobe JSON output. Error: {e}")
+                print(f"ffprobe stdout: {result.stdout if 'result' in locals() else 'N/A'}")
+            except Exception as e:
+                print(f"ERROR [{job_name}]: An unexpected error occurred getting video dimensions: {e}")
+                traceback.print_exc()
+                main_video_width, main_video_height = None, None  # Ensure None on error
+        else:
+            print(
+                f"WARNING [{job_name}]: Cannot get dimensions, main video path is invalid or missing: {path_before_overlay}")
+        # === V1.20/Phase 2 END: Get Main Video Dimensions ===
+
+        # === V1.20 CHANGE START: Dynamic Product Clip Selection ===
+        # This block now assumes product_clip_path exists (as None) and tries to assign a real path
+        print(
+            f"[{job_name}] Attempting to find product clips for product: '{product}' in base directory: '{product_clips_base_dir}'")
+        if isinstance(product, str) and product and isinstance(product_clips_base_dir, str) and product_clips_base_dir:
+            try:
+                product_folder_path = os.path.join(product_clips_base_dir, product)
+                print(f"[{job_name}] Constructed product folder path: {product_folder_path}")
+                if os.path.isdir(product_folder_path):
+                    print(f"[{job_name}] Searching for .mov files in: {product_folder_path}")
+                    possible_clips = []
+                    try:
+                        for filename in os.listdir(product_folder_path):
+                            if filename.lower().endswith(".mov"):
+                                full_path = os.path.join(product_folder_path, filename)
+                                possible_clips.append(full_path)
+                    except OSError as list_err:
+                        print(f"WARNING [{job_name}]: Error listing files in {product_folder_path}: {list_err}")
+
+                    if possible_clips:
+                        # Assign value to the pre-initialized product_clip_path
+                        product_clip_path = random.choice(possible_clips)
+                        print(f"[{job_name}] Randomly selected product clip: {product_clip_path}")
+                    else:
+                        print(
+                            f"WARNING [{job_name}]: Product folder '{product_folder_path}' found, but no .mov files exist inside. Cannot apply overlay.")
+                        # product_clip_path remains None
+                else:
+                    print(
+                        f"WARNING [{job_name}]: Product folder not found: {product_folder_path}. Cannot apply overlay.")
+                    # product_clip_path remains None
+            except Exception as path_err:
+                print(f"ERROR [{job_name}]: Failed during product clip path processing: {path_err}")
+                traceback.print_exc()
+                product_clip_path = None  # Reset to None on error
+        else:
+            print(
+                f"WARNING [{job_name}]: Invalid 'product' or 'product_clips_base_dir'. Cannot determine product clip path.")
+            product_clip_path = None  # Reset to None
+        # === V1.20 CHANGE END ===
+
+        # === Check if overlay is possible ===
+        # Now this check can safely use product_clip_path because it was initialized earlier
+        should_overlay = (
+                path_before_overlay and os.path.exists(path_before_overlay)
+                and product_clip_path and os.path.exists(
+            product_clip_path)  # product_clip_path guaranteed to exist (as None or path)
+                and main_video_width and main_video_height  # Check we got main dimensions too
+        )
+
+        # Initialize geometry variable
+        calculated_geometry = None
+        overlay_ready = False  # Flag to track if we have geometry needed for overlay
+
+        if should_overlay:
+            print(f"[{job_name}] Overlay possible. Proceeding with geometry calculation.")
+            # --- Get Overlay Clip Aspect Ratio ---
+            overlay_aspect_ratio = None
+            try:
+                print(f"[{job_name}] Getting dimensions for overlay clip: {product_clip_path}")
+                ffprobe_cmd_clip = [
+                    'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                    '-show_entries', 'stream=width,height', '-of', 'json', product_clip_path
+                ]
+                result_clip = subprocess.run(ffprobe_cmd_clip, capture_output=True, text=True, check=True,
+                                             encoding='utf-8')
+                output_data_clip = json.loads(result_clip.stdout)
+                if output_data_clip and 'streams' in output_data_clip and len(output_data_clip['streams']) > 0:
+                    stream_data_clip = output_data_clip['streams'][0]
+                    overlay_w_orig = stream_data_clip.get('width')
+                    overlay_h_orig = stream_data_clip.get('height')
+                    if isinstance(overlay_w_orig, int) and isinstance(overlay_h_orig, int) and overlay_h_orig > 0:
+                        overlay_aspect_ratio = overlay_w_orig / overlay_h_orig
+                        print(
+                            f"[{job_name}] Found overlay clip dimensions: {overlay_w_orig}x{overlay_h_orig}, Aspect Ratio: {overlay_aspect_ratio:.3f}")
+                    else:
+                        print(
+                            f"WARNING [{job_name}]: ffprobe output for overlay clip missing width/height or height is zero.")
+                else:
+                    print(f"WARNING [{job_name}]: ffprobe output for overlay clip missing stream data.")
+            except Exception as ff_err:
+                print(f"ERROR [{job_name}]: Failed to get overlay clip dimensions or aspect ratio: {ff_err}")
+                # overlay_aspect_ratio remains None
+
+            # --- Determine Placement and Size ---
+            if overlay_aspect_ratio:  # Only proceed if we got aspect ratio
+                # Defaults and supported placements based on constraints
+                selected_placement = "middle_left"
+                relative_size = 0.4
+                # Expand the list of supported placements to allow for more positioning options
+                supported_placements = [
+                    "top_left", "top_center", "top_right",
+                    "middle_left", "middle_center", "middle_right",
+                    "bottom_left", "bottom_center", "bottom_right"
+                ]
+
+                # Check overlay_settings from YAML
+                if overlay_settings and isinstance(overlay_settings, dict):
+                    print(f"[{job_name}] Using overlay_settings from job config.")
+                    placements_list = overlay_settings.get('placements', [])
+                    valid_user_placements = [p for p in placements_list if
+                                             isinstance(p, str) and p in supported_placements]
+                    size_range_list = overlay_settings.get('size_range', [])
+
+                    if valid_user_placements:
+                        # Use the first placement from the list (not random choice) to ensure consistent placement
+                        selected_placement = valid_user_placements[0]
+                        print(f"[{job_name}] Using specified placement from config: '{selected_placement}'")
+                    else:
+                        print(
+                            f"WARNING [{job_name}]: No supported placements ({supported_placements}) found in overlay_settings: {placements_list}. Using default '{selected_placement}'.")
+
+                    if isinstance(size_range_list, list) and len(size_range_list) == 2 and \
+                            isinstance(size_range_list[0], (int, float)) and isinstance(size_range_list[1],
+                                                                                        (int, float)) and \
+                            0.05 < size_range_list[0] <= size_range_list[1] < 0.95:
+                        # Use the maximum size in the range for larger overlays
+                        relative_size = size_range_list[1]
+                        print(
+                            f"[{job_name}] Using size from YAML: placement='{selected_placement}', size={relative_size:.2f}")
+                    else:
+                        print(
+                            f"WARNING [{job_name}]: Invalid 'size_range' in overlay_settings: {size_range_list}. Using default size {relative_size:.2f}.")
+                else:
+                    print(
+                        f"[{job_name}] No valid 'overlay_settings' found in job config. Using defaults: placement='{selected_placement}', size={relative_size:.2f}")
+
+                # --- Calculate Final Geometry using Helper Function ---
+                calculated_geometry = calculate_overlay_geometry(
+                    placement_str=selected_placement,
+                    relative_size=relative_size,
+                    main_w=main_video_width,
+                    main_h=main_video_height,
+                    overlay_aspect_ratio=overlay_aspect_ratio,
+                    margin_percent=7  # Using 7% margin as discussed
+                )
+
+                if calculated_geometry:
+                    overlay_ready = True
+                    print(f"[{job_name}] Geometry calculated. Ready for overlay.")
+                else:
+                    print(f"ERROR [{job_name}]: Failed to calculate overlay geometry. Skipping overlay.")
+            else:
+                print(
+                    f"WARNING [{job_name}]: Missing overlay aspect ratio. Cannot calculate geometry. Skipping overlay.")
+
+            # --- Proceed ONLY if geometry was successfully calculated ---
+            if overlay_ready:
+                overlay_step_start_time = time.time()
+                video_with_overlay_path = f"{output_file_base}_final_overlay.mp4"
+                temp_audio_for_asr_filename = f"temp_asr_audio_{run_uuid}.aac"
+                temp_audio_extracted = False
+                start_time_asr = None
+                end_time_asr = None
+                overlay_success = False
+
+                try:
+                    # 1. Extract audio
+                    print(f"[{job_name}] Extracting audio for timestamp analysis from: {path_before_overlay}")
+                    extract_cmd = ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'warning', '-i', path_before_overlay,
+                                   '-vn', '-acodec', 'copy', temp_audio_for_asr_filename]
+                    extract_success, extract_err = run_ffmpeg_command(extract_cmd)
+                    if not extract_success or not os.path.exists(temp_audio_for_asr_filename) or os.path.getsize(
+                            temp_audio_for_asr_filename) == 0:
+                        raise RuntimeError(f"Audio extraction failed: {extract_err}")
+                    temp_audio_extracted = True
+                    print(f"[{job_name}] Audio extracted to {temp_audio_for_asr_filename}")
+
+                    # 2. Get timestamps using Whisper
+                    keywords_to_use = trigger_keywords if trigger_keywords is not None else []
+                    print(f"DEBUG [{job_name}]: Using trigger keywords for ASR from job config: {keywords_to_use}")
+                    start_time_asr, end_time_asr = get_product_mention_times(
+                        audio_path=temp_audio_for_asr_filename, trigger_keywords=keywords_to_use,
+                        language=language, job_name=job_name
+                    )
+
+                    # 3. Perform overlay if times were found
+                    if start_time_asr is not None and end_time_asr is not None:
+                        os.makedirs(os.path.dirname(video_with_overlay_path), exist_ok=True)
+                        print(f"[{job_name}] Attempting FFmpeg overlay using calculated geometry...")
+
+                        # === V1.20/Phase 2 CHANGE D: Update call to overlay_product_video ===
+                        print(f"[{job_name}] Calling overlay function with geometry: {calculated_geometry}")
+                        overlay_success = overlay_product_video(
+                            main_video_path=path_before_overlay, product_clip_path=product_clip_path,
+                            start_time=start_time_asr, end_time=end_time_asr,
+                            output_path=video_with_overlay_path,
+                            overlay_x=calculated_geometry['x'], overlay_y=calculated_geometry['y'],
+                            overlay_w=calculated_geometry['w'], overlay_h=calculated_geometry['h'],
+                            job_name=job_name
+                        )
+                        # === End Update Call ===
+
+                        if overlay_success and (not os.path.exists(video_with_overlay_path) or os.path.getsize(
+                                video_with_overlay_path) == 0):
+                            print(
+                                f"ERROR [{job_name}]: overlay_product_video reported success, but output file missing or empty: {video_with_overlay_path}")
+                            overlay_success = False
+                    else:
+                        print(
+                            f"[{job_name}] Product keywords not found or timing invalid via ASR. Skipping FFmpeg overlay.")
+                        overlay_success = False
+
+                except Exception as e:
+                    print(f"ERROR [{job_name}]: Failed during overlay processing step (audio/ASR/ffmpeg): {e}")
+                    traceback.print_exc()
+                    overlay_success = False
+                finally:
+                    if temp_audio_extracted and os.path.exists(temp_audio_for_asr_filename):
+                        try:
+                            os.remove(temp_audio_for_asr_filename); print(
+                                f"[{job_name}] Cleaned up temp ASR audio file: {temp_audio_for_asr_filename}")
+                        except OSError as e:
+                            print(
+                                f"Warning [{job_name}]: Failed to delete temp ASR audio {temp_audio_for_asr_filename}: {e}")
+
+                # 4. Update final path variable based on overlay success
+                if overlay_success:
+                    print(f"[{job_name}] Overlay successful. Final video path updated to: {video_with_overlay_path}")
+                    final_output_path = video_with_overlay_path
+                    try:
+                        print(f"[{job_name}] Removing intermediate video (pre-overlay): {path_before_overlay}")
+                        os.remove(path_before_overlay)
+                    except OSError as e:
+                        print(
+                            f"Warning [{job_name}]: Failed to remove intermediate video {path_before_overlay}: {e}. Both versions may exist.")
+                else:
+                    print(
+                        f"Warning/Info [{job_name}]: Overlay failed or skipped. Final video path remains: {final_output_path}")
+
+                print(
+                    f"[{job_name}] Step 8 Sub-Process (Audio/ASR/FFmpeg) completed in {time.time() - overlay_step_start_time:.2f}s")
+                # --- End of block that runs only if overlay_ready is True ---
+
+        else:  # should_overlay was False initially
+            # Logging for skipping overlay
+            if not path_before_overlay or not os.path.exists(path_before_overlay):
+                print(
+                    f"[{job_name}] Skipping overlay because base video path is invalid or missing: {path_before_overlay}")
+            elif not product_clip_path:  # Covers folder not found, no .mov files, errors, etc.
+                print(f"[{job_name}] Skipping overlay because no valid product clip could be selected.")
+            elif not os.path.exists(product_clip_path):
+                print(
+                    f"[{job_name}] Skipping overlay because selected product clip file does not exist: {product_clip_path}")
+            elif not main_video_width or not main_video_height:
+                print(f"[{job_name}] Skipping overlay because main video dimensions could not be determined.")
+            else:  # Generic fallback if none of the specific reasons matched
+                print(f"[{job_name}] Skipping overlay for an undetermined reason (should_overlay is False).")
+            # General skip message was here - removed for more specific logging above
+
+        # --- Step 8 Block Ends --- The rest of the function continues...
+
         # --- Final Check (uses final_output_path which might now be the _overlay path) ---
         print(f"[{job_name}] Performing final check on path: {final_output_path}")
         if not final_output_path or not os.path.exists(final_output_path) or os.path.getsize(final_output_path) == 0: # Fail the job
@@ -1260,9 +1751,9 @@ def create_video_job(
         # --- Cleanup ---
         print(f"--- [{job_name}] Final Cleanup ---")
         # Delete temporary local files if they still exist
-        if 'temp_audio_filename' in locals() and temp_audio_filename and os.path.exists(temp_audio_filename):
-             try: os.remove(temp_audio_filename); print(f"[{job_name}] Cleaned up: {temp_audio_filename}")
-             except OSError as e: print(f"Warning [{job_name}]: Failed cleanup {temp_audio_filename}: {e}")
+    #    if 'temp_audio_filename' in locals() and temp_audio_filename and os.path.exists(temp_audio_filename):
+    #         try: os.remove(temp_audio_filename); print(f"[{job_name}] Cleaned up: {temp_audio_filename}")
+    #         except OSError as e: print(f"Warning [{job_name}]: Failed cleanup {temp_audio_filename}: {e}")
         # Check if raw_downloaded_video_path still exists (it might have been renamed/deleted in Step 6)
         if 'raw_downloaded_video_path' in locals() and raw_downloaded_video_path and os.path.exists(raw_downloaded_video_path):
              try: os.remove(raw_downloaded_video_path); print(f"[{job_name}] Cleaned up: {raw_downloaded_video_path}")
