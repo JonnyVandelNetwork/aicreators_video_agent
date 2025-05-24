@@ -1,4 +1,5 @@
 import os
+import logging
 import sys
 import shutil
 import yaml
@@ -23,6 +24,9 @@ else:
 # ─── 2) Prepare a user‐writable config directory ─────────────────────────────
 CONFIG_DIR = Path.home() / ".zyra-video-agent"
 CONFIG_DIR.mkdir(exist_ok=True)
+
+LOG_PATH = CONFIG_DIR / "app.log"
+WRITE_LOGS = True # Logs to file feature flag
 
 # Paths for user config files
 ENV_PATH       = CONFIG_DIR / ".env"
@@ -66,6 +70,27 @@ SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 # ─── 4) Load environment variables from user .env ────────────────────────────
 load_dotenv(dotenv_path=str(ENV_PATH))
 
+if WRITE_LOGS:
+    # Redirect stdout & stderr to the same log file
+    log_f = open(str(LOG_PATH), "a", buffering=1, encoding="utf-8")  # line-buffered
+    sys.stdout = log_f
+    sys.stderr = log_f
+
+    # 1) BasicConfig for the root logger – all modules that do logging.debug/info/etc will go here
+    logging.basicConfig(
+        level=logging.DEBUG,                       # capture DEBUG and above
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        filename=str(LOG_PATH),                        # path to your log file
+        filemode="a",                              # append (use "w" to overwrite each run)
+    )
+
+    # 2) (Optional) also mirror logs to console
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)                 # only INFO+ to console
+    console.setFormatter(logging.Formatter("%(levelname)-8s %(message)s"))
+    logging.getLogger().addHandler(console)
+
 # ─── 5) Initialize Flask ─────────────────────────────────────────────────────
 app = Flask(__name__)
 # TODO Allow your UI origins (you can also use "*" in dev)
@@ -73,6 +98,11 @@ CORS(app, resources={
   r"/*":     {"origins": "*"}
   # or simply r"/*": {"origins": "*"} for dev
 })
+
+if WRITE_LOGS:
+    # Flask uses its own logger; route it to our handlers:
+    app.logger.handlers = logging.getLogger().handlers
+    app.logger.setLevel(logging.DEBUG)
 
 app.secret_key = "secure-temporary-key"
 
@@ -141,7 +171,6 @@ def add_campaign():
       "brand_name": "MyBrand",                 # optional
       "remove_silence": true,                  # optional
       "enhance_for_elevenlabs": false,         # optional
-      "output_path": "/full/path/to/output.mp4" # optional
     }
     """
 
@@ -156,7 +185,7 @@ def add_campaign():
         "job_name", "product", "persona", "setting",
         "emotion", "hook", "elevenlabs_voice_id",
         "language", "avatar_video_path", "avatar_id",
-        "example_script_file", "script_id"
+        "example_script_file", "script_id", "randomization_intensity"
     ]
     missing = [f for f in required if not data.get(f)]
     if missing:
@@ -167,12 +196,12 @@ def add_campaign():
     job["brand_name"] = data.get("brand_name", "")
     job["remove_silence"] = bool(data.get("remove_silence"))
     job["enhance_for_elevenlabs"] = bool(data.get("enhance_for_elevenlabs"))
+    job["use_randomization"] = bool(data.get("use_randomization"))
     job["enabled"] = True
 
     # 3) Metadata
     job["id"] = uuid.uuid4().hex
     job["created_at"] = datetime.now().isoformat()
-    job["output_path"] = data.get("output_path")
 
     # 4) Persist
     jobs = load_jobs()
@@ -198,7 +227,6 @@ def edit_campaign(campaign_id):
       - brand_name
       - remove_silence (boolean)
       - enhance_for_elevenlabs (boolean)
-      - output_path
       - enabled (boolean)
     """
     # 1) Load existing campaigns
@@ -216,9 +244,10 @@ def edit_campaign(campaign_id):
                 "job_name", "product", "persona", "setting", "emotion", "hook",
                 "elevenlabs_voice_id", "language", "brand_name",
                 "remove_silence", "enhance_for_elevenlabs",
+                "use_randomization", "randomization_intensity",
                 "avatar_video_path", "avatar_id",
                 "example_script_file", "script_id",
-                "output_path", "enabled"
+                "enabled"
             ]:
                 if field in data:
                     job[field] = data[field]
@@ -322,6 +351,8 @@ def run_job():
                 avatar_video_path      = job["avatar_video_path"],
                 example_script_content = example_script,
                 remove_silence         = job.get("remove_silence", False),
+                use_randomization      = job.get("use_randomization", False),
+                randomization_intensity= job.get("randomization_intensity"),
                 language               = job.get("language", "English"),
                 enhance_for_elevenlabs = job.get("enhance_for_elevenlabs", False),
                 brand_name             = job.get("brand_name", ""),
