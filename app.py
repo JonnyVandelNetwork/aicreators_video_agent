@@ -32,6 +32,8 @@ WRITE_LOGS = True # Logs to file feature flag
 ENV_PATH       = CONFIG_DIR / ".env"
 CAMPAIGNS_PATH = CONFIG_DIR / "campaigns.yaml"
 
+WORKING_DIR    = CONFIG_DIR / "working-dir"
+
 # ─── Avatars config ────────────────────────────────────────────
 AVATARS_PATH = CONFIG_DIR / "avatars.yaml"
 AVATARS_DIR  = CONFIG_DIR / "uploads" / "avatars"
@@ -336,9 +338,16 @@ def run_job():
     # 4) Launch background thread
     def _runner():
         try:
-            # a) Read script
-            script_path = Path(job["example_script_file"])
-            example_script = script_path.read_text(encoding="utf-8")
+
+            # clone the script into a unique temp file avoiding job collisions
+            original = Path(job["example_script_file"])
+            temp_dir = WORKING_DIR  # your per-app working dir
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            tmp_script = temp_dir / f"script_{run_id}.txt"
+            shutil.copy(original, tmp_script)
+
+            # Now read only from the copy
+            example_script = tmp_script.read_text(encoding="utf-8")
 
             # b) Call the core function
             success, output_path = create_video_job(
@@ -388,6 +397,10 @@ def run_job():
             q.put({"type": "error", "Job failed with exception, message": err})
             app.job_results[run_id] = {"success": False, "error": err}
             # No re-raise: we want the thread to exit gracefully
+
+        finally:
+            if tmp_script and tmp_script.exists():
+                tmp_script.unlink()
 
     threading.Thread(target=_runner, daemon=True).start()
 
