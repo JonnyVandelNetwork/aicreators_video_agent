@@ -26,7 +26,7 @@ CONFIG_DIR = Path.home() / ".zyra-video-agent"
 CONFIG_DIR.mkdir(exist_ok=True)
 
 LOG_PATH = CONFIG_DIR / "app.log"
-WRITE_LOGS = True # Logs to file feature flag
+WRITE_LOGS = False # Logs to file feature flag
 
 # Paths for user config files
 ENV_PATH       = CONFIG_DIR / ".env"
@@ -40,6 +40,9 @@ AVATARS_DIR  = CONFIG_DIR / "uploads" / "avatars"
 # ─── Scripts config ──────────────────────────────────────────────
 SCRIPTS_PATH = CONFIG_DIR / "scripts.yaml"
 SCRIPTS_DIR  = CONFIG_DIR / "uploads" / "scripts"
+# ─── Clips config ────────────────────────────────────────────────
+CLIPS_PATH = CONFIG_DIR / "clips.yaml"
+CLIPS_DIR  = CONFIG_DIR / "uploads" / "clips"
 
 # ─── 3) Copy templates on first run ──────────────────────────────────────────
 bundle_env       = BASE_DIR / ".env"
@@ -68,6 +71,11 @@ if not SCRIPTS_PATH.exists():
     SCRIPTS_PATH.write_text(yaml.safe_dump({"scripts": []}))
 
 SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+if not CLIPS_PATH.exists():
+    CLIPS_PATH.write_text(yaml.safe_dump({"clips": []}))
+
+CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ─── 4) Load environment variables from user .env ────────────────────────────
 load_dotenv(dotenv_path=str(ENV_PATH))
@@ -144,6 +152,15 @@ def save_scripts(lst):
     with open(SCRIPTS_PATH, "w") as f:
         yaml.safe_dump({"scripts": lst}, f)
 
+def load_clips():
+    with open(CLIPS_PATH, "r") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("clips", [])
+
+def save_clips(lst):
+    with open(CLIPS_PATH, "w") as f:
+        yaml.safe_dump({"clips": lst}, f)
+
 # ─── Campaigns Management ────────────────────────────────────
 @app.route("/campaigns", methods=["GET"])
 def get_campaigns():
@@ -196,6 +213,9 @@ def add_campaign():
     # 2) Build job dict
     job = {k: data[k] for k in required}
     job["brand_name"] = data.get("brand_name", "")
+    job["product_clip_id"] = data.get("product_clip_id", "")
+    job["product_clip_path"] = data.get("product_clip_path", "")
+    job["trigger_keywords"] = data.get("trigger_keywords", [])
     job["remove_silence"] = bool(data.get("remove_silence"))
     job["enhance_for_elevenlabs"] = bool(data.get("enhance_for_elevenlabs"))
     job["use_randomization"] = bool(data.get("use_randomization"))
@@ -249,6 +269,7 @@ def edit_campaign(campaign_id):
                 "use_randomization", "randomization_intensity",
                 "avatar_video_path", "avatar_id",
                 "example_script_file", "script_id",
+                "product_clip_id", "product_clip_path", "trigger_keywords",
                 "enabled"
             ]:
                 if field in data:
@@ -613,6 +634,118 @@ def edit_script(script_id):
             return jsonify(rec), 200
 
     abort(404, description=f"Script ID '{script_id}' not found")
+
+# ─── GET /clips ─────────────────────────────────────────────────
+@app.route("/clips", methods=["GET"])
+def get_clips():
+    """Return all product clips as JSON."""
+    return jsonify({"clips": load_clips()})
+
+
+# ─── POST /clips ────────────────────────────────────────────────
+@app.route("/clips", methods=["POST"])
+def add_clip():
+    """
+    Upload a new product clip and register its metadata:
+      - name      (string form field)
+      - product   (string form field)
+      - clip_file (uploaded .mov file)
+    Returns JSON: { id, name, product, file_path }
+    """
+    name    = request.form.get("name", "").strip()
+    product = request.form.get("product", "").strip()
+    clip    = request.files.get("clip_file")
+
+    if not name or not product:
+        return jsonify({"error": "Fields 'name' and 'product' are required"}), 400
+    if not clip or not clip.filename:
+        return jsonify({"error": "Please upload a clip file (.mov)"}), 400
+
+    # save the file
+    dest = CLIPS_DIR / clip.filename
+    clip.save(dest)
+
+    record = {
+        "id":        uuid.uuid4().hex,
+        "name":      name,
+        "product":   product,
+        "file_path": str(dest)
+    }
+
+    lst = load_clips()
+    lst.append(record)
+    save_clips(lst)
+
+    return jsonify(record), 201
+
+
+# ─── DELETE /clips/<id> ────────────────────────────────────────
+@app.route("/clips/<clip_id>", methods=["DELETE"])
+def delete_clip(clip_id):
+    """
+    Delete the clip record and remove its file from disk.
+    """
+    clips = load_clips()
+    rec = next((c for c in clips if c["id"] == clip_id), None)
+    if not rec:
+        abort(404, description=f"Clip ID '{clip_id}' not found")
+
+    # delete file on disk
+    fp = Path(rec["file_path"])
+    if fp.exists():
+        try:
+            fp.unlink()
+        except Exception as e:
+            app.logger.warning(f"Failed to delete clip file '{fp}': {e}")
+
+    # remove from list and persist
+    remaining = [c for c in clips if c["id"] != clip_id]
+    save_clips(remaining)
+
+    return "", 204
+
+
+# ─── PUT /clips/<id> ───────────────────────────────────────────
+@app.route("/clips/<clip_id>", methods=["PUT"])
+def edit_clip(clip_id):
+    """
+    Update a clip’s name, product, or replace its file.
+    Accepts multipart/form-data:
+      - name (optional)
+      - product (optional)
+      - clip_file (optional)
+    Returns JSON: updated record
+    """
+    clips = load_clips()
+    for i, rec in enumerate(clips):
+        if rec["id"] == clip_id:
+            data = request.form.to_dict()
+
+            # update textual fields
+            if "name" in data:
+                rec["name"] = data["name"].strip()
+            if "product" in data:
+                rec["product"] = data["product"].strip()
+
+            # replace file if provided
+            new_clip = request.files.get("clip_file")
+            if new_clip and new_clip.filename:
+                # delete old file
+                old_fp = Path(rec["file_path"])
+                if old_fp.exists():
+                    try: old_fp.unlink()
+                    except Exception: pass
+
+                # save new file
+                dest = CLIPS_DIR / new_clip.filename
+                new_clip.save(dest)
+                rec["file_path"] = str(dest)
+
+            clips[i] = rec
+            save_clips(clips)
+            return jsonify(rec), 200
+
+    abort(404, description=f"Clip ID '{clip_id}' not found")
 
 # ─── Optional: allow direct `python app.py` for debugging ────────────────────
 if __name__ == "__main__":
