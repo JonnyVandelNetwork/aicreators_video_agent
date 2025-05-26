@@ -213,9 +213,11 @@ def add_campaign():
     # 2) Build job dict
     job = {k: data[k] for k in required}
     job["brand_name"] = data.get("brand_name", "")
+    job["use_overlay"] = bool(data.get("use_overlay"))
     job["product_clip_id"] = data.get("product_clip_id", "")
     job["product_clip_path"] = data.get("product_clip_path", "")
     job["trigger_keywords"] = data.get("trigger_keywords", [])
+    job["overlay_settings"] = data.get("overlay_settings", [])
     job["remove_silence"] = bool(data.get("remove_silence"))
     job["enhance_for_elevenlabs"] = bool(data.get("enhance_for_elevenlabs"))
     job["use_randomization"] = bool(data.get("use_randomization"))
@@ -269,7 +271,8 @@ def edit_campaign(campaign_id):
                 "use_randomization", "randomization_intensity",
                 "avatar_video_path", "avatar_id",
                 "example_script_file", "script_id",
-                "product_clip_id", "product_clip_path", "trigger_keywords",
+                "use_overlay", "product_clip_id", "product_clip_path",
+                "overlay_settings", "trigger_keywords",
                 "enabled"
             ]:
                 if field in data:
@@ -372,6 +375,7 @@ def run_job():
 
             # b) Call the core function
             success, output_path = create_video_job(
+                job_name               = job["job_name"],
                 product                = job["product"],
                 persona                = job["persona"],
                 setting                = job["setting"],
@@ -386,11 +390,14 @@ def run_job():
                 language               = job.get("language", "English"),
                 enhance_for_elevenlabs = job.get("enhance_for_elevenlabs", False),
                 brand_name             = job.get("brand_name", ""),
+                use_overlay            = job.get("use_overlay", False),
+                product_clip_path      = job.get("product_clip_path", None),
+                trigger_keywords       = job.get("trigger_keywords", None),
+                overlay_settings       = job.get("overlay_settings", None),
                 openai_api_key         = os.getenv("OPENAI_API_KEY"),
                 elevenlabs_api_key     = os.getenv("ELEVENLABS_API_KEY"),
                 dreamface_api_key      = os.getenv("DREAMFACE_API_KEY"),
                 gcs_bucket_name        = os.getenv("GCS_BUCKET_NAME"),
-                job_name               = job["job_name"],
                 output_path            = os.getenv("OUTPUT_PATH"),
                 progress_callback      = lambda step, total, msg: q.put({
                     "type": "progress", "step": step, "total": total, "message": msg

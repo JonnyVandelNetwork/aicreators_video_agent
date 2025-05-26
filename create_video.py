@@ -957,15 +957,143 @@ def get_product_mention_times(audio_path: str, trigger_keywords: list[str], lang
     print(f"[{job_name}] Trigger keywords {final_trigger_keywords} not found in audio.")
     return None, None
 
+def overlay_product_video(
+    main_video_path: str,
+    product_clip_path: str,
+    start_time: float,
+    end_time: float,
+    output_path: str,
+    # Replace position_config with specific geometry values
+    overlay_x: int,
+    overlay_y: int,
+    overlay_w: int,
+    overlay_h: int,
+    job_name: str = "Job"
+) -> bool:
+    # Note: end_time argument is now ignored by the filter, but kept for function signature consistency
+    print(f"[{job_name}] Starting product overlay process (Alpha Attempt 2.3: Use gte(t,start) + Popen)...") # Log attempt
+    print(f"  Main Video: {main_video_path}")
+    print(f"  Product Clip (.mov): {product_clip_path}")
+    # Log the start time, mention end_time is ignored by filter now
+    print(f"  Overlay Start Time: {start_time:.2f}s (Will play for clip duration or until main video ends)")
+    # === V1.20/Phase 2 CHANGE B: Update log message ===
+    print(f"  Calculated Geometry: X={overlay_x}, Y={overlay_y}, W={overlay_w}, H={overlay_h}")
+    print(f"  Output Path: {output_path}")
+
+    # --- Input file checks ---
+    if not os.path.exists(main_video_path): print(f"ERROR [{job_name}]: Main video for overlay not found: {main_video_path}"); return False
+    if not os.path.exists(product_clip_path): print(f"ERROR [{job_name}]: Product clip (.mov) for overlay not found: {product_clip_path}"); return False
+    if start_time is None: print(f"ERROR [{job_name}]: Invalid start time for overlay ({start_time})"); return False # Only check start_time now
+
+# --- Configure Filter Complex (Using Calculated Geometry) ---
+
+    # Ensure start_time and end_time are correctly defined before this block
+    if start_time is None or end_time is None:
+        print(f"ERROR [{job_name}]: Cannot build filter_complex, start_time or end_time is None.")
+        return False
+
+    # === V1.20/Phase 2 CHANGE C: Update filter_complex string ===
+    filter_complex = (
+        # 1. Scale the overlay clip [1:v] precisely to the calculated width/height
+        #    and ensure it has an alpha channel (format=yuva444p recommended for MOV transparency).
+        f"[1:v]scale={overlay_w}:{overlay_h},format=pix_fmts=yuva444p[scaled_overlay_input];" # Use calculated W:H
+
+        # 2. Prepare main video PTS [0:v] (no change needed here)
+        f"[0:v]setpts=PTS-STARTPTS[main_v];"
+
+        # 3. Overlay the scaled clip onto the main video using calculated X/Y coordinates.
+        #    Enable the overlay only between the calculated start and end times.
+        f"[main_v][scaled_overlay_input]overlay=x={overlay_x}:y={overlay_y}" # Use calculated X:Y
+        f":enable='between(t,{start_time:.3f},{end_time:.3f})'[outv]"
+    )
+    # === End Filter Complex Update ===
+
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
+# --- Construct FFmpeg Command (Applying -itsoffset - Step 2) ---
+    ffmpeg_cmd = [
+        ffmpeg_exe, '-hide_banner', '-loglevel', 'warning',
+
+        # Input 0: Main Video (Keep genpts from original for this test)
+        '-i', main_video_path,
+
+        # Input 1: Overlay Video (Add -itsoffset BEFORE this input)
+        '-itsoffset', f"{start_time:.3f}", # Shifts timestamps of the overlay input
+        '-i', product_clip_path,           # The .mov file with alpha
+
+        # Filters (filter_complex string defined above this block remains the same for Step 2)
+        '-filter_complex', filter_complex,
+
+        # Output Mapping
+        '-map', '[outv]', # Map video from filter
+        '-map', '0:a?',   # Map audio from main video (if it exists)
+
+        # Encoding options (Same as your original)
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-profile:v', 'high', '-level:v', '4.0', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-movflags', '+faststart',
+        '-y', # Overwrite output file without asking
+        output_path # The final output path
+    ]
+    # --- End FFmpeg Command Construction ---
+
+    print(f"[{job_name}] Running FFmpeg overlay command (Alpha Attempt 2.3)...")
+    # print(f"DEBUG CMD: {' '.join(ffmpeg_cmd)}")
+
+    # --- Execute using Popen + communicate (Keep this robust method) ---
+    # ... (Execution code remains the same as previous attempt) ...
+    process = None
+    stderr_output = ""
+    try:
+        process = subprocess.Popen(ffmpeg_cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True, encoding='utf-8', errors='ignore')
+        stderr_output, _ = process.communicate(timeout=600) # Wait with timeout
+
+        if process.returncode == 0:
+            print(f"[{job_name}] FFmpeg overlay process (Alpha Attempt 2.3) completed successfully.")
+            # ...(Same success logging)...
+            if stderr_output:
+                 filtered_stderr = "\n".join(line for line in stderr_output.splitlines() if not line.strip().startswith('frame=') and not line.strip().startswith('size=') and not line.strip().startswith('LAVF'))
+                 if filtered_stderr.strip(): print(f"--- FFmpeg Info/Warnings ---\n{filtered_stderr}\n--------------------------")
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0: print(f"ERROR [{job_name}]: FFmpeg reported success, but output file is missing or empty: {output_path}"); return False
+            return True
+        else:
+            print(f"ERROR [{job_name}]: FFmpeg overlay command failed (Return Code: {process.returncode})")
+            # ...(Same error logging)...
+            print(f"--- FFmpeg stderr ---\n{stderr_output if stderr_output else 'N/A'}\n---------------------")
+            return False
+    except subprocess.TimeoutExpired:
+        print(f"ERROR [{job_name}]: FFmpeg overlay command timed out after 600 seconds.")
+        # ...(Same timeout handling)...
+        if process: process.kill()
+        if stderr_output: print(f"--- FFmpeg stderr before timeout ---\n{stderr_output}\n---------------------")
+        return False
+    except FileNotFoundError:
+        print(f"ERROR [{job_name}]: ffmpeg command not found. Ensure FFmpeg is installed and in PATH.")
+        return False
+    except Exception as e:
+        print(f"ERROR [{job_name}]: An unexpected error occurred during FFmpeg overlay execution: {e}")
+        # ...(Same exception handling)...
+        traceback.print_exc()
+        if process and process.poll() is None: process.kill()
+        return False
+
+
 # --- Core Video Generation Function (Modified Signature) ---
 def create_video_job(
     # --- Existing parameters ---
     product: str, persona: str, setting: str, emotion: str, hook: str,
     elevenlabs_voice_id: str, avatar_video_path: str, example_script_content: str,
-    remove_silence: bool, language: str, enhance_for_elevenlabs: bool, brand_name: str,
+    remove_silence: bool, use_randomization: bool, language: str, enhance_for_elevenlabs: bool, brand_name: str,
     # --- API keys / Config ---
     openai_api_key: str, elevenlabs_api_key: str, dreamface_api_key: str, gcs_bucket_name: str,
-    output_path: str, use_randomization: bool, randomization_intensity: str = "medium",
+    output_path: str,
+    # --- Product Overlay Parameters ---
+    use_overlay: bool,
+    product_clip_path: str | None = None, # Product clip for overlay on top of avatar speach
+    trigger_keywords: list[str] | None = None,  # Accepts trigger keywords list
+    overlay_settings: dict | None = None,  # Accepts overlay settings dictionary
+    # --- Randomization Parameters ---
+    randomization_intensity: str = "medium",
     # --- Job Info ---
     job_name: str = "Unnamed Job",
     # --- Progress callback ---
@@ -1421,9 +1549,7 @@ def create_video_job(
         # This variable will track the final path *resulting* from this step.
         final_output_path = path_before_overlay
 
-        # === V1.20 Initialize variable BEFORE potential use ===
-        product_clip_path = None  # Initialize here to ensure it always exists
-        # === End Initialization ===
+        #TODO check product_clip_path and use overlay flag
 
         # === V1.20/Phase 2 START: Get Main Video Dimensions ===
         main_video_width = None
@@ -1467,47 +1593,6 @@ def create_video_job(
                 f"WARNING [{job_name}]: Cannot get dimensions, main video path is invalid or missing: {path_before_overlay}")
         # === V1.20/Phase 2 END: Get Main Video Dimensions ===
 
-        # === V1.20 CHANGE START: Dynamic Product Clip Selection ===
-        # This block now assumes product_clip_path exists (as None) and tries to assign a real path
-        print(
-            f"[{job_name}] Attempting to find product clips for product: '{product}' in base directory: '{product_clips_base_dir}'")
-        if isinstance(product, str) and product and isinstance(product_clips_base_dir, str) and product_clips_base_dir:
-            try:
-                product_folder_path = os.path.join(product_clips_base_dir, product)
-                print(f"[{job_name}] Constructed product folder path: {product_folder_path}")
-                if os.path.isdir(product_folder_path):
-                    print(f"[{job_name}] Searching for .mov files in: {product_folder_path}")
-                    possible_clips = []
-                    try:
-                        for filename in os.listdir(product_folder_path):
-                            if filename.lower().endswith(".mov"):
-                                full_path = os.path.join(product_folder_path, filename)
-                                possible_clips.append(full_path)
-                    except OSError as list_err:
-                        print(f"WARNING [{job_name}]: Error listing files in {product_folder_path}: {list_err}")
-
-                    if possible_clips:
-                        # Assign value to the pre-initialized product_clip_path
-                        product_clip_path = random.choice(possible_clips)
-                        print(f"[{job_name}] Randomly selected product clip: {product_clip_path}")
-                    else:
-                        print(
-                            f"WARNING [{job_name}]: Product folder '{product_folder_path}' found, but no .mov files exist inside. Cannot apply overlay.")
-                        # product_clip_path remains None
-                else:
-                    print(
-                        f"WARNING [{job_name}]: Product folder not found: {product_folder_path}. Cannot apply overlay.")
-                    # product_clip_path remains None
-            except Exception as path_err:
-                print(f"ERROR [{job_name}]: Failed during product clip path processing: {path_err}")
-                traceback.print_exc()
-                product_clip_path = None  # Reset to None on error
-        else:
-            print(
-                f"WARNING [{job_name}]: Invalid 'product' or 'product_clips_base_dir'. Cannot determine product clip path.")
-            product_clip_path = None  # Reset to None
-        # === V1.20 CHANGE END ===
-
         # === Check if overlay is possible ===
         # Now this check can safely use product_clip_path because it was initialized earlier
         should_overlay = (
@@ -1525,6 +1610,8 @@ def create_video_job(
             print(f"[{job_name}] Overlay possible. Proceeding with geometry calculation.")
             # --- Get Overlay Clip Aspect Ratio ---
             overlay_aspect_ratio = None
+            overlay_duration = 5.0  # Default duration
+
             try:
                 print(f"[{job_name}] Getting dimensions for overlay clip: {product_clip_path}")
                 ffprobe_cmd_clip = [
@@ -1570,6 +1657,7 @@ def create_video_job(
                     valid_user_placements = [p for p in placements_list if
                                              isinstance(p, str) and p in supported_placements]
                     size_range_list = overlay_settings.get('size_range', [])
+                    overlay_duration = overlay_settings.get('maximum_overlay_duration', 5.0)
 
                     if valid_user_placements:
                         # Use the first placement from the list (not random choice) to ensure consistent placement
@@ -1624,9 +1712,11 @@ def create_video_job(
                 overlay_success = False
 
                 try:
+                    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
                     # 1. Extract audio
                     print(f"[{job_name}] Extracting audio for timestamp analysis from: {path_before_overlay}")
-                    extract_cmd = ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'warning', '-i', path_before_overlay,
+                    extract_cmd = [ffmpeg_exe, '-y', '-hide_banner', '-loglevel', 'warning', '-i', path_before_overlay,
                                    '-vn', '-acodec', 'copy', temp_audio_for_asr_filename]
                     extract_success, extract_err = run_ffmpeg_command(extract_cmd)
                     if not extract_success or not os.path.exists(temp_audio_for_asr_filename) or os.path.getsize(
@@ -1640,7 +1730,7 @@ def create_video_job(
                     print(f"DEBUG [{job_name}]: Using trigger keywords for ASR from job config: {keywords_to_use}")
                     start_time_asr, end_time_asr = get_product_mention_times(
                         audio_path=temp_audio_for_asr_filename, trigger_keywords=keywords_to_use,
-                        language=language, job_name=job_name
+                        language=language, job_name=job_name, desired_duration=overlay_duration
                     )
 
                     # 3. Perform overlay if times were found
@@ -1751,9 +1841,9 @@ def create_video_job(
         # --- Cleanup ---
         print(f"--- [{job_name}] Final Cleanup ---")
         # Delete temporary local files if they still exist
-    #    if 'temp_audio_filename' in locals() and temp_audio_filename and os.path.exists(temp_audio_filename):
-    #         try: os.remove(temp_audio_filename); print(f"[{job_name}] Cleaned up: {temp_audio_filename}")
-    #         except OSError as e: print(f"Warning [{job_name}]: Failed cleanup {temp_audio_filename}: {e}")
+        if 'temp_audio_filename' in locals() and temp_audio_filename and os.path.exists(temp_audio_filename):
+             try: os.remove(temp_audio_filename); print(f"[{job_name}] Cleaned up: {temp_audio_filename}")
+             except OSError as e: print(f"Warning [{job_name}]: Failed cleanup {temp_audio_filename}: {e}")
         # Check if raw_downloaded_video_path still exists (it might have been renamed/deleted in Step 6)
         if 'raw_downloaded_video_path' in locals() and raw_downloaded_video_path and os.path.exists(raw_downloaded_video_path):
              try: os.remove(raw_downloaded_video_path); print(f"[{job_name}] Cleaned up: {raw_downloaded_video_path}")
