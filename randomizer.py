@@ -1396,10 +1396,10 @@ def process_video_frame_by_frame_randomized(
                 )
 
             # --- Write Frame ---
-            if frame_count == 50:  # Keep the single frame save
-                debug_save_path = os.path.join(temp_dir, "debug_frame_50_final.png")
-                cv2.imwrite(debug_save_path, processed_frame)
-                print(f"DEBUG: Saved frame 50 to {debug_save_path}")
+            # if frame_count == 50:  # Keep the single frame save
+            #     debug_save_path = os.path.join(temp_dir, "debug_frame_50_final.png")
+            #     cv2.imwrite(debug_save_path, processed_frame)
+            #     print(f"DEBUG: Saved frame 50 to {debug_save_path}")
 
             # ADD THIS periodic check:
             if frame_count % 30 == 0:  # Print every 30 frames
@@ -1896,6 +1896,7 @@ def randomize_video(
         print(
             f"Total randomization time: {applied_settings['processing_time_seconds']:.2f} seconds"
         )
+        files_to_cleanup.add(final_audio_path)
 
         # Log applied settings
         try:
@@ -1937,7 +1938,7 @@ def randomize_video(
                 if f_path and os.path.exists(f_path):  # Check path is not None
                     try:
                         os.remove(f_path)
-                        # print(f" Cleaned up: {f_path}") # Optional: Verbose cleanup log
+                        print(f" Cleaned up: {f_path}") # Optional: Verbose cleanup log
                     except Exception as e:
                         print(f"Warning: Could not remove temp file {f_path}: {e}")
 

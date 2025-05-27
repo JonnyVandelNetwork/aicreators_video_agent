@@ -1544,8 +1544,6 @@ def create_video_job(
         step_start_time = time.time()  # Reset timer for the next step
         final_output_path = path_after_randomization
 
-        # path_after_randomization = str("/Users/ozaitsev/Documents/Storage/new.mp4")  # TODO
-
         # --- Step 8: Product Overlay (Optional) ---
         print(f"\n--- [{job_name}] Step 8: Product Overlay (Optional) ---")
         progress_callback(step, total_steps, steps[step])
@@ -1777,7 +1775,7 @@ def create_video_job(
                     finally:
                         if temp_audio_extracted and os.path.exists(temp_audio_for_asr_filename):
                             try:
-                                # os.remove(temp_audio_for_asr_filename)
+                                os.remove(temp_audio_for_asr_filename)
                                 print(f"[{job_name}] Cleaned up temp ASR audio file: {temp_audio_for_asr_filename}")
                             except OSError as e:
                                 print(
